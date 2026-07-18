@@ -1,0 +1,125 @@
+#crb-panel{position:fixed;top:72px;right:16px;left:auto;z-index:2147483646;width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 90px);background:#262522;color:#f3f3f3;border:1px solid #4b4843;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+#crb-panel *{box-sizing:border-box}#crb-panel .crb-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #474540;font-size:15px;cursor:grab;user-select:none;touch-action:none}#crb-panel.dragging .crb-head{cursor:grabbing}#crb-panel .crb-head-title{display:flex;align-items:center;gap:7px}#crb-panel .crb-drag-handle{color:#918b82;font-size:18px;line-height:1}#crb-panel .crb-head button{cursor:pointer}#crb-panel .crb-body{padding:10px 12px 12px;overflow:auto;max-height:calc(100vh - 135px)}#crb-panel.collapsed .crb-body{display:none}#crb-panel button,#crb-panel select,#crb-panel textarea{font:inherit}#crb-panel button{border:1px solid #5b574f;border-radius:6px;padding:6px 8px;background:#34322e;color:#eee;cursor:pointer}#crb-panel button:hover{background:#45413b}#crb-panel button.selected{background:#769c3b;border-color:#91b855;color:white}#crb-panel button.danger{color:#ffc0b7;border-color:#744a44}#crb-panel .crb-collapse{background:none;border:0;font-size:20px;padding:0 4px}#crb-panel .crb-row{display:flex;gap:6px}#crb-panel .crb-select{flex:1;min-width:0;border:1px solid #514e48;border-radius:6px;background:#171614;color:#eee;padding:6px}#crb-panel .crb-toolbar,#crb-panel .crb-actions,#crb-panel .crb-role-actions,#crb-panel .crb-nags{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}#crb-panel .crb-status{margin:10px 0;padding:8px;background:#1d1c1a;border-radius:6px;color:#cbc5ba}#crb-panel section{border-top:1px solid #403e39;padding-top:9px;margin-top:9px}#crb-panel .crb-title{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#aaa399;margin:7px 0 5px}#crb-panel .crb-comment{width:100%;min-height:72px;resize:vertical;border:1px solid #514e48;border-radius:6px;background:#171614;color:#eee;padding:7px}#crb-panel .crb-move{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid #393733}#crb-panel .crb-move span{display:flex;flex-direction:column}#crb-panel .crb-move small{color:#9e988f}#crb-panel .crb-empty{color:#9e988f;padding:8px 0}#crb-panel .crb-foot{margin-top:10px;color:#888178;font-size:10px}
+
+#crb-panel .crb-continuation-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+#crb-panel .crb-line-card{border:1px solid #45423d;border-radius:7px;background:#211f1c;margin:5px 0;overflow:hidden}
+#crb-panel .crb-line-card.preferred{box-shadow:inset 3px 0 0 #769c3b}
+#crb-panel .crb-line-row{display:flex;align-items:flex-start;gap:6px;padding:0}
+#crb-panel .crb-line-details{flex:1;min-width:0}
+#crb-panel details>summary{list-style:none}
+#crb-panel details>summary::-webkit-details-marker{display:none}
+#crb-panel .crb-line-details>summary{display:flex;align-items:center;gap:7px;min-width:0;padding:8px 7px 8px 9px;cursor:pointer;user-select:none}
+#crb-panel .crb-line-details>summary:hover{background:#2b2925}
+#crb-panel .crb-chevron{display:inline-block;flex:0 0 auto;color:#aaa399;font-size:18px;line-height:1;transition:transform .12s ease}
+#crb-panel details[open]>summary>.crb-chevron{transform:rotate(90deg)}
+#crb-panel .crb-line-summary{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}
+#crb-panel .crb-line-head{display:flex;align-items:baseline;gap:7px;min-width:0}
+#crb-panel .crb-line-head b{font-size:19px;line-height:1.12;color:#fffdf8}
+#crb-panel .crb-line-head small{color:#a9c982;font-size:10px;text-transform:uppercase;letter-spacing:.045em}
+#crb-panel .crb-line-preview{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d0cbc3;font-size:13px;line-height:1.35}
+#crb-panel .crb-play{flex:0 0 auto;margin:8px 7px 0 0;padding:5px 7px;font-size:11px}
+#crb-panel .crb-expanded-line{border-top:1px solid #3d3a35;padding:8px 9px 9px 27px;background:#1c1b18}
+#crb-panel .crb-tree-level{position:relative}
+#crb-panel .crb-tree-main{padding:3px 0;color:#eeeae4}
+#crb-panel .crb-tree-token{font-size:13px;font-weight:600}
+#crb-panel .crb-tree-badge{margin-left:6px;color:#a9c982;font-size:9px;text-transform:uppercase;letter-spacing:.04em}
+#crb-panel .crb-tree-next{margin-left:0;padding-left:0;border-left:0}
+#crb-panel .crb-tree-sidelines{margin:4px 0 5px 11px;padding-left:9px;border-left:1px dashed #555047}
+#crb-panel .crb-sideline-label{margin:3px 0;color:#948e84;font-size:9px;text-transform:uppercase;letter-spacing:.045em}
+#crb-panel .crb-nested-line{margin:3px 0}
+#crb-panel .crb-nested-line>summary{display:flex;align-items:center;gap:4px;min-width:0;padding:3px 4px;border-radius:4px;cursor:pointer;color:#cbc6be}
+#crb-panel .crb-nested-line>summary:hover{background:#292722}
+#crb-panel .crb-nested-line .crb-chevron{font-size:15px}
+#crb-panel .crb-nested-preview{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#c3beb6}
+#crb-panel .crb-nested-body{margin-left:11px;padding:4px 0 2px 9px;border-left:1px solid #46423b}
+#crb-panel .crb-line-comment{margin:3px 0 5px;padding:5px 7px;border-radius:4px;background:#27241f;color:#bbb4aa;font-size:11px;white-space:pre-wrap}
+#crb-panel .crb-tree-end{padding:4px 0;color:#8e887f;font-size:11px;font-style:italic}
+.crb-sync-note{margin-top:6px;font-size:11px;line-height:1.35;color:#caa66a}
+
+#crb-panel button:disabled,#crb-panel select:disabled{opacity:.55;cursor:not-allowed}
+#crb-panel .crb-tabs{display:flex;margin:-10px -12px 10px;border-bottom:1px solid #4b4843;background:#211f1c}
+#crb-panel .crb-tab{position:relative;flex:1;border:0;border-radius:0;padding:10px 12px 11px;background:transparent;color:#d7d2ca;font:inherit;font-size:14px;font-weight:700}
+#crb-panel .crb-tab:hover{background:rgba(255,255,255,.045);color:#fff}
+#crb-panel .crb-tab.selected{background:linear-gradient(to bottom,rgba(100,139,53,.16),rgba(100,139,53,.045));color:#fff;box-shadow:none}
+#crb-panel .crb-tab.selected::after{content:"";position:absolute;left:18%;right:18%;bottom:-1px;height:3px;background:#83aa4f;border-radius:3px 3px 0 0}
+#crb-panel[data-site="lichess"] .crb-tab{display:flex!important;align-items:center!important;justify-content:center!important;text-align:center!important}
+#crb-panel[data-site="lichess"] .crb-tab.selected::after{left:0!important;right:0!important;border-radius:0!important}
+#crb-panel .crb-practice-modes{display:flex;flex-direction:column;gap:6px;margin:10px 0 3px}
+#crb-panel .crb-practice-modes button{display:flex;align-items:baseline;justify-content:space-between;width:100%;border-radius:6px;padding:9px 10px;background:#292723;color:#d3cec5;text-align:left}
+#crb-panel .crb-practice-modes button b{font-size:13px}
+#crb-panel .crb-practice-modes button small{color:#9e988f;font-size:10px;font-weight:400}
+#crb-panel .crb-practice-modes button.selected{background:#4d692e;border-color:#789b49;color:#fff}
+#crb-panel .crb-practice-modes button.selected small{color:#dce8ca}
+#crb-panel .crb-study-toggle{background:#55762f;border-color:#789b49;font-weight:700}
+#crb-panel .crb-study{border:1px solid #4a4842;border-radius:8px;background:#1c1b19;padding:10px;margin-top:9px}
+#crb-panel .crb-study-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+#crb-panel .crb-study-score{color:#aaa49b;font-size:11px;white-space:nowrap}
+#crb-panel .crb-study-message{margin:9px 0 7px;padding:9px;border-radius:6px;background:#292722;color:#eee9e1;font-size:14px;line-height:1.4}
+#crb-panel .crb-study-message.correct{box-shadow:inset 3px 0 0 #769c3b}
+#crb-panel .crb-study-message.wrong{box-shadow:inset 3px 0 0 #b95d50}
+#crb-panel .crb-study-comment{margin:7px 0;padding:8px 9px;border-radius:6px;background:#302c24;border:1px solid #544b39;color:#d9cfbd;white-space:pre-wrap;font-size:12px;line-height:1.45}
+#crb-panel .crb-study-controls{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+#crb-panel .crb-study-controls button:first-child{background:#4d692e;border-color:#708e48}#crb-panel .crb-study-controls button.crb-study-skip{background:#34322e;border-color:#5b574f}
+#crb-panel .crb-study-answer{margin:7px 0;padding:8px 9px;border:1px solid #48443d;border-radius:6px;background:#24221e;color:#d8d2c8;font-size:12px;line-height:1.45}
+#crb-panel .crb-study-label{margin-bottom:4px;color:#aaa399;font-size:10px;text-transform:uppercase;letter-spacing:.045em}
+#crb-panel .crb-study-line-preview{margin-top:5px;padding:7px;border-radius:5px;background:#171614;color:#ebe6df;font-size:13px;line-height:1.45;white-space:normal}
+#crb-panel .crb-study-meta{margin-top:9px;color:#858077;font-size:10px}
+#crb-panel .crb-review-badge{display:inline-block;padding:2px 6px;border:1px solid #8b5a45;border-radius:999px;background:#3a2922;color:#f1b89c;font-size:9px;text-transform:uppercase;letter-spacing:.045em}
+
+#crb-panel .crb-study-option{display:flex;align-items:center;gap:7px;margin-top:8px;color:#c9c3b9;font-size:11px;cursor:pointer;user-select:none}
+#crb-panel .crb-study-option input{margin:0;accent-color:#789b49}
+#crb-panel .crb-study-option>span:last-child:not(:nth-child(2)){margin-left:auto;color:#8e897f;font-size:10px;font-style:italic}
+
+/* Chapter and control organization */
+#crb-panel .crb-control-section{margin-top:9px;padding:9px;border:1px solid #403e39;border-radius:8px;background:#211f1c}
+#crb-panel .crb-control-section+.crb-control-section{margin-top:7px}
+#crb-panel .crb-control-section .crb-title{margin-top:0}
+#crb-panel .crb-study-section{border-color:#4b563c;background:#20231c}
+#crb-panel .crb-section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:7px}
+#crb-panel .crb-section-heading b{font-size:13px;color:#e6e2da}
+#crb-panel .crb-chapter-select{display:block;width:100%;min-width:0;border:1px solid #514e48;border-radius:6px;background:#171614;color:#eee;padding:7px 8px}
+#crb-panel .crb-inline-note{margin-top:5px;color:#958f86;font-size:10px}
+#crb-panel .crb-inline-note.warning{color:#e0a779}
+#crb-panel .crb-chapter-section .crb-toolbar,#crb-panel .crb-management-section .crb-toolbar{margin-bottom:0}
+#crb-panel .crb-management-section{background:#1e1d1b}
+#crb-panel .crb-study-exit-row{margin:9px 0 6px}
+#crb-panel .crb-study-exit-row .crb-study-toggle{background:#48352f;border-color:#704c43}
+
+/* v2.2.2 compact workflow ordering */
+#crb-panel .crb-repertoire-actions{margin:6px 0 2px;padding:0 1px}
+#crb-panel .crb-repertoire-actions button{padding:6px 8px;font-size:13px}
+#crb-panel .crb-chapter-section{background:#211f1c}
+#crb-panel .crb-chapter-actions{margin-bottom:0}
+#crb-panel .crb-study-section .crb-toolbar{margin-bottom:4px}
+#crb-panel .crb-maia-setting{margin:5px 0 9px;padding:8px 9px;border:1px solid #46513a;border-radius:6px;background:#1b2018}
+#crb-panel .crb-maia-setting .crb-study-option{margin-top:0;font-size:12px;color:#e0ddd6}
+#crb-panel .crb-maia-rating{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:7px;color:#aaa399;font-size:11px}
+#crb-panel .crb-maia-rating .crb-select{flex:0 0 92px;padding:5px 7px}
+#crb-panel .crb-live-candidates{margin:8px 0}
+#crb-panel .crb-line-card.played{box-shadow:inset 3px 0 0 #9dcc61}
+#crb-panel .crb-live-primary{display:block;width:100%;margin:2px 0 16px;padding:10px 12px;background:#55762f;border-color:#83aa4f;color:#fff;font-size:14px;font-weight:800}
+#crb-panel .crb-live-primary:hover{background:#64883a}
+#crb-panel .crb-mastery{margin:9px 0 7px;padding:8px 9px;border:1px solid #46513a;border-radius:6px;background:#1b2018}
+#crb-panel .crb-mastery-head{display:flex;justify-content:space-between;gap:8px;color:#d8d4cc;font-size:11px;font-weight:700}
+#crb-panel .crb-mastery-track{height:6px;margin:6px 0;border-radius:999px;background:#393c32;overflow:hidden}
+#crb-panel .crb-mastery-track span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#719d43,#a5c96f)}
+#crb-panel .crb-mastery-note{color:#9eaa90;font-size:10px}
+#crb-panel .crb-live-color{display:flex;align-items:center;gap:6px;margin:0 0 10px;color:#aaa399;font-size:11px}
+#crb-panel .crb-live-color span{margin-right:auto}
+#crb-panel .crb-live-color button{padding:5px 9px;font-size:11px}
+#crb-panel .crb-live-color button.selected{background:#4d692e;border-color:#789b49;color:#fff}
+#crb-panel .crb-live-section{border-color:#405143;background:#1d241d}
+
+/* Build and practice controls: elevate the labels and actions people use most. */
+#crb-panel .crb-chapter-section .crb-title,
+#crb-panel .crb-study-section .crb-title{color:#f0ede7;font-size:13px;font-weight:750;letter-spacing:.055em}
+#crb-panel .crb-annotation-title{color:#e5e1da!important;font-size:12px!important;font-weight:700}
+#crb-panel .crb-study-section .crb-toolbar button{padding:8px 10px;font-size:13px;font-weight:700}
+#crb-panel .crb-live-color{align-items:center;margin:2px 0 12px;color:#ebe8e1;font-size:13px;font-weight:700}
+#crb-panel .crb-live-color button{padding:7px 12px;font-size:13px;font-weight:700}
+#crb-panel .crb-lichess-auth{display:flex;align-items:center;justify-content:space-between;gap:9px;margin:9px 0;color:#ebe8e1;font-size:13px;font-weight:700}
+#crb-panel .crb-lichess-auth-button{padding:7px 10px;font-size:12px;font-weight:700}
+#crb-panel .crb-live-section .crb-study-option{margin-top:11px;padding:8px 9px;border:1px solid #46513a;border-radius:6px;background:#1b2018;color:#f0ede7;font-size:13px;font-weight:700}
+#crb-panel .crb-live-section .crb-study-option input{width:16px;height:16px}
+#crb-panel .crb-maia-rating{margin-top:11px;color:#f0ede7;font-size:14px;font-weight:700}
+#crb-panel .crb-maia-rating .crb-select{flex:0 0 118px;padding:8px 10px;font-size:14px;font-weight:700}

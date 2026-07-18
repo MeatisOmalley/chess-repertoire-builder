@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Chess Repertoire Builder",
+  "version": "3.1.2",
+  "description": "Build, organize, and practice chess repertoires on Chess.com and Lichess.",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://lichess.org/*",
+        "https://www.lichess.org/*"
+      ],
+      "js": [
+        "lichess-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.chess.com/*",
+        "https://chess.com/*",
+        "https://lichess.org/*",
+        "https://www.lichess.org/*"
+      ],
+      "js": [
+        "chess-core.js",
+        "maia-client.js",
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["identity", "storage"],
+  "host_permissions": ["https://explorer.lichess.ovh/*", "https://lichess.org/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "opening-chapters.json",
+        "official-repertoires/Danish_Gambit_-_Official.pgn",
+        "official-repertoires/Stafford_Gambit_-_Official.pgn",
+        "maia-worker.js",
+        "maia3/maia3_simplified.onnx",
+        "ort/ort.wasm.min.js",
+        "ort/ort-wasm-simd-threaded.mjs",
+        "ort/ort-wasm-simd-threaded.wasm"
+      ],
+      "matches": [
+        "https://www.chess.com/*",
+        "https://chess.com/*",
+        "https://lichess.org/*",
+        "https://www.lichess.org/*"
+      ]
+    }
+  ]
+}
