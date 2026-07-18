@@ -1,0 +1,8 @@
+Source data: lichess-org/chess-openings
+Repository: https://github.com/lichess-org/chess-openings
+
+The repository states that, insofar as the curated collection qualifies for copyright,
+it is released under the CC0 Public Domain Dedication.
+
+This extension includes copied TSV source records and a generated lookup index derived
+from those records. No engine evaluations or player-game statistics are included.
