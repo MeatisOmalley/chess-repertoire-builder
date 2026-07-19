@@ -4,7 +4,7 @@ A Chromium extension for building, organizing, exporting, and practicing chess r
 
 ## Install (Developer Mode)
 
-1. Download this repository as a ZIP file and extract it to a permanent folder. Do not select the ZIP itself.
+1. Download this repository as a ZIP file and extract it.
 2. In Chrome, open `chrome://extensions`; in Edge, open `edge://extensions`.
 3. Enable **Developer mode**.
 4. Click **Load unpacked**.
