@@ -36,7 +36,7 @@
   const COMMENT_AUTO_MAX_DELAY = 5200;
   const COMMENT_AUTO_MS_PER_CHAR = 24;
 
-  let data = { repertoires: [], activeId: null };
+  let data = { repertoires: [], activeId: null, deletedRepertoires: {} };
   let studyData = { repertoires: {} };
   let history = [{ state: INITIAL, placement: INITIAL_PLACEMENT, move: null }];
   let cursor = 0;
@@ -65,6 +65,10 @@
   let safetyTimer = null;
   let chapterNavigation = null;
   let lastChapterAutoSyncToken = "";
+  let observedStateToken = "";
+  let livePracticeSession = 0;
+  let persistedData = null;
+  let saveQueue = Promise.resolve();
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -74,6 +78,7 @@
   const uid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
   const stateKey = state => C.fen(state).split(/\s+/).slice(0, 4).join(" ");
   const repertoireTurn = rep => rep.color === "white" ? "w" : "b";
+  const repertoireRootState = rep => C.parseFen(`${rep.rootKey} 0 1`);
 
   function freshStudyState() {
     return {
@@ -150,7 +155,58 @@
     livePractice.autoFailTimer = null;
   }
 
-  const save = () => chrome.storage.local.set({ [STORE]: data });
+  const cloneValue = value => JSON.parse(JSON.stringify(value));
+  const sameValue = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+  // Content scripts can be active on Chess.com and Lichess at the same time.
+  // Merge repertoire-level edits against the last observed storage snapshot so
+  // an edit in one tab does not overwrite an unrelated repertoire in another.
+  function mergeData(base, local, remote) {
+    const previous = base || { repertoires: [], activeId: null, deletedRepertoires: {} };
+    const localData = local || previous;
+    const remoteData = remote || previous;
+    const byId = source => new Map((source.repertoires || []).map(rep => [rep.id, rep]));
+    const before = byId(previous), here = byId(localData), there = byId(remoteData);
+    const tombstones = { ...(remoteData.deletedRepertoires || {}), ...(localData.deletedRepertoires || {}) };
+    const ids = new Set([...before.keys(), ...here.keys(), ...there.keys()]);
+    const repertoires = [];
+    for (const id of ids) {
+      const oldRep = before.get(id), localRep = here.get(id), remoteRep = there.get(id);
+      const deletedAt = Number(tombstones[id] || 0);
+      const newestRepAt = Math.max(Number(localRep?.updatedAt || 0), Number(remoteRep?.updatedAt || 0));
+      if (deletedAt && deletedAt >= newestRepAt) continue;
+      if (!oldRep) {
+        if (localRep && remoteRep) repertoires.push(Number(localRep.updatedAt || 0) >= Number(remoteRep.updatedAt || 0) ? localRep : remoteRep);
+        else if (localRep || remoteRep) repertoires.push(localRep || remoteRep);
+        continue;
+      }
+      const localChanged = !sameValue(localRep, oldRep);
+      const remoteChanged = !sameValue(remoteRep, oldRep);
+      if (!localRep) { if (remoteRep && remoteChanged) repertoires.push(remoteRep); continue; }
+      if (!remoteRep) { if (localRep && localChanged) repertoires.push(localRep); continue; }
+      if (!localChanged) repertoires.push(remoteRep);
+      else if (!remoteChanged) repertoires.push(localRep);
+      else repertoires.push(Number(localRep.updatedAt || 0) >= Number(remoteRep.updatedAt || 0) ? localRep : remoteRep);
+    }
+    const activeId = repertoires.some(rep => rep.id === localData.activeId)
+      ? localData.activeId
+      : repertoires.some(rep => rep.id === remoteData.activeId)
+        ? remoteData.activeId
+        : repertoires[0]?.id || null;
+    return { repertoires, activeId, deletedRepertoires: tombstones };
+  }
+
+  const save = () => {
+    const local = cloneValue(data);
+    const base = cloneValue(persistedData || data);
+    saveQueue = saveQueue.then(async () => {
+      const stored = await chrome.storage.local.get(STORE);
+      data = mergeData(base, local, stored[STORE]);
+      persistedData = cloneValue(data);
+      await chrome.storage.local.set({ [STORE]: data });
+    }).catch(error => console.error("[Chess Repertoire Builder] Could not save repertoires:", error));
+    return saveQueue;
+  };
   const saveUi = () => chrome.storage.local.set({ [UI]: uiState });
   const saveStudy = () => chrome.storage.local.set({ [STUDY_STORE]: studyData });
   const scheduleRender = () => {
@@ -163,6 +219,10 @@
 
   function migrateData() {
     let changed = false;
+    if (!data.deletedRepertoires || typeof data.deletedRepertoires !== "object") {
+      data.deletedRepertoires = {};
+      changed = true;
+    }
     for (const rep of data.repertoires || []) {
       if (rep.schemaVersion !== 4) changed = true;
       rep.schemaVersion = 4;
@@ -226,8 +286,22 @@
     if (result[STORE]) data = result[STORE];
     if (result[STUDY_STORE]) studyData = result[STUDY_STORE];
     migrationDirty = migrateData();
+    persistedData = cloneValue(data);
     resolve(result[UI] || {});
   }));
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[STORE]?.newValue) return;
+    const remote = changes[STORE].newValue;
+    if (sameValue(remote, data)) {
+      persistedData = cloneValue(remote);
+      return;
+    }
+    data = mergeData(persistedData || data, data, remote);
+    persistedData = cloneValue(remote);
+    migrateData();
+    scheduleRender();
+  });
 
   function chessComAnalysisContext() {
     const path = location.pathname.toLowerCase();
@@ -243,6 +317,14 @@
     return /^\/play\/online(?:\/|$)/.test(path) ||
       /^\/game\/live(?:\/|$)/.test(path) ||
       /^\/live(?:\/|$)/.test(path);
+  }
+
+  function chessComBoardControlContext() {
+    if (chessComAnalysisContext()) return true;
+    const path = location.pathname.toLowerCase();
+    // Computer games are the only non-analysis Chess.com boards on which the
+    // extension is allowed to move pieces. Unknown routes stay observation-only.
+    return /^\/play\/computer(?:\/|$)/.test(path) || /^\/game\/computer(?:\/|$)/.test(path);
   }
 
   function chessComCorrespondenceContext() {
@@ -297,7 +379,7 @@
 
   function fullBoardControlAvailable() {
     if (realCorrespondenceGameContext()) return false;
-    return SITE === "chesscom" ? !chessComContextBlocked() : lichessAnalysisCapable();
+    return SITE === "chesscom" ? chessComBoardControlContext() : lichessAnalysisCapable();
   }
 
   async function waitForAllowedContext() {
@@ -432,6 +514,12 @@
     return typeof snapshot?.fen === "string" && snapshot.fen.includes("/") ? snapshot.fen : "";
   }
 
+  function readBoardFen() {
+    if (SITE === "chesscom") return readChessComFen();
+    const fen = document.documentElement.dataset.crbLichessFen;
+    return typeof fen === "string" && fen.includes("/") ? fen : "";
+  }
+
   function readChessComPlacement(board) {
     const bridgedFen = readChessComFen();
     if (bridgedFen) return bridgedFen.split(/\s+/)[0];
@@ -488,7 +576,7 @@
     return data.repertoires.find(rep => rep.id === data.activeId) || null;
   }
 
-  function repertoireRecord(name, color) {
+  function repertoireRecord(name, color, rootState = INITIAL) {
     return {
       id: uid(),
       schemaVersion: 4,
@@ -496,7 +584,7 @@
       color,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      rootKey: stateKey(INITIAL),
+      rootKey: stateKey(rootState),
       positions: {},
       chapters: []
     };
@@ -745,7 +833,7 @@
     const cacheKey = `${rep.id}|${rep.updatedAt || 0}|${positionCount}|${edgeCount}`;
     const cached = chapterDiscoveryCache.get(cacheKey);
     if (cached) return cached;
-    const found = new Map([[rep.rootKey, { key: rep.rootKey, state: INITIAL, path: [], depth: 0 }]]);
+    const found = new Map([[rep.rootKey, { key: rep.rootKey, state: repertoireRootState(rep), path: [], depth: 0 }]]);
     const queue = [rep.rootKey];
     while (queue.length) {
       const key = queue.shift();
@@ -1048,6 +1136,8 @@
     if (!confirm(`Permanently delete the entire repertoire “${rep.name}”?`)) return;
     if (study.active) exitStudy();
     data.repertoires = data.repertoires.filter(item => item.id !== rep.id);
+    data.deletedRepertoires ||= {};
+    data.deletedRepertoires[rep.id] = Date.now();
     data.activeId = data.repertoires[0]?.id || null;
     save();
     render();
@@ -1360,7 +1450,7 @@
     saveStudy();
   }
 
-  function buildStudyCatalog(rep, rootKey = rep.rootKey, rootState = INITIAL) {
+  function buildStudyCatalog(rep, rootKey = rep.rootKey, rootState = repertoireRootState(rep)) {
     const catalog = [];
     const visited = new Set();
     const walk = (key, state, path) => {
@@ -1590,7 +1680,7 @@
     }
 
     const reachable = repertoirePositionMap(rep);
-    let scopeRootState = INITIAL;
+    let scopeRootState = repertoireRootState(rep);
     let scopeRootKey = rep.rootKey;
     let scopeRootHistoryIndex = 0;
     let scopeRootSetupPath = [];
@@ -2673,6 +2763,7 @@
   async function advanceLivePractice() {
     const rep = active();
     if (!livePractice.active) return;
+    const session = livePractice.session;
     clearLivePracticeTimers();
     const state = currentState();
     const key = stateKey(state);
@@ -2702,7 +2793,7 @@
     livePractice.message = "Checking opening explorer…";
     render();
     const explorer = await queryExplorer(state, rating);
-    if (!livePractice.active || stateKey(currentState()) !== key) return;
+    if (!livePractice.active || livePractice.session !== session || stateKey(currentState()) !== key) return;
     const explorerMoves = (explorer.moves || []).filter(move => legalUcis.has(move.uci));
     const weights = new Map(explorerMoves.map(move => [move.uci, Number(move.games) || 0]));
     let chosen = null;
@@ -2734,6 +2825,7 @@
       render();
       try { chosen = { uci: await MAIA.chooseMove(C.fen(state), rating, legal.map(move => move.uci)) }; }
       catch (error) {
+        if (!livePractice.active || livePractice.session !== session) return;
         const detail = error?.message || MAIA?.lastError || "Unknown local model error";
         console.error("[Chess Repertoire Builder] Maia fallback failed:", error);
         livePractice.message = `Explorer data is insufficient; Maia could not start: ${detail}`;
@@ -2742,7 +2834,7 @@
         return;
       }
     }
-    if (!chosen?.uci || !livePractice.active || stateKey(currentState()) !== key) return;
+    if (!chosen?.uci || !livePractice.active || livePractice.session !== session || stateKey(currentState()) !== key) return;
     const move = legal.find(item => item.uci === chosen.uci);
     const moveName = move ? C.san(state, move) : chosen.uci;
     livePractice.message = explorerSelectionPercent === null
@@ -2760,6 +2852,7 @@
     if (study.active) exitStudy();
     clearLivePracticeTimers();
     livePractice = freshLivePracticeState();
+    livePractice.session = ++livePracticeSession;
     livePractice.active = true;
     livePractice.playerColor = uiState.livePracticeColor === "black" ? "black" : "white";
     livePractice.message = "Starting live practice…";
@@ -2769,7 +2862,7 @@
     advanceLivePractice();
   }
 
-  function exitLivePractice() { clearLivePracticeTimers(); livePractice = freshLivePracticeState(); render(); }
+  function exitLivePractice() { clearLivePracticeTimers(); livePracticeSession++; livePractice = freshLivePracticeState(); render(); }
 
   function processLivePracticeForwardRange(startIndex, endIndex) {
     if (!livePractice.active) return;
@@ -3076,11 +3169,11 @@
     return true;
   }
 
-  function nearestKnownIndex(placement) {
+  function nearestKnownIndex(placement, targetKey = "", targetFen = "") {
     let best = -1;
     let bestDistance = Infinity;
     for (let index = 0; index < history.length; index++) {
-      if (history[index].placement !== placement) continue;
+      if (targetFen ? C.fen(history[index].state) !== targetFen : targetKey ? stateKey(history[index].state) !== targetKey : history[index].placement !== placement) continue;
       const distance = Math.abs(index - cursor);
       if (distance < bestDistance || (distance === bestDistance && index > best)) {
         best = index;
@@ -3090,9 +3183,12 @@
     return best;
   }
 
-  function acceptPlacement(placement) {
+  function acceptPlacement(placement, observedFen = "") {
     if (!placement) return false;
-    if (history[cursor]?.placement === placement) {
+    const observedState = parseFenSafely(observedFen);
+    const targetKey = observedState ? stateKey(observedState) : "";
+    const targetFen = observedState ? C.fen(observedState) : "";
+    if (targetFen ? C.fen(history[cursor]?.state) === targetFen : history[cursor]?.placement === placement) {
       latestUnmatched = "";
       return true;
     }
@@ -3108,6 +3204,7 @@
     // handled below as a known-position jump and is never graded.
     if ((study.active || livePractice.active) && (boardMoveIntent || automatedIntent)) {
       const replayHit = C.matchTransition(base, placement);
+      if (replayHit && targetKey && stateKey(replayHit.state) !== targetKey) return false;
       if (replayHit) {
         history = history.slice(0, cursor + 1);
         history.push({ state: replayHit.state, placement, move: replayHit.move });
@@ -3122,7 +3219,7 @@
       }
     }
 
-    const known = nearestKnownIndex(placement);
+    const known = nearestKnownIndex(placement, targetKey, targetFen);
     if (known >= 0) {
       cursor = known;
       lastTransition = cursor ? { move: history[cursor].move, state: history[cursor].state } : null;
@@ -3134,6 +3231,7 @@
       return true;
     }
     const hit = C.matchTransition(base, placement);
+    if (hit && targetKey && stateKey(hit.state) !== targetKey) return false;
     if (!hit) return false;
     history = history.slice(0, cursor + 1);
     history.push({ state: hit.state, placement, move: hit.move });
@@ -3275,6 +3373,7 @@
     cursor = nextCursor;
     lastTransition = cursor ? { move: history[cursor].move, state: history[cursor].state } : null;
     observedPlacement = history[cursor].placement;
+    observedStateToken = C.fen(history[cursor].state);
     latestUnmatched = "";
     syncNotice = rebuilt.detached ? "Synced to Chess.com’s current position." : "";
     const now = performance.now();
@@ -3329,8 +3428,11 @@
   function recoverLatestPlacement() {
     const placement = readPlacement();
     if (!placement) return;
+    const observedFen = readBoardFen();
     observedPlacement = placement;
-    if (acceptPlacement(placement)) return;
+    const observedState = parseFenSafely(observedFen);
+    observedStateToken = observedState ? C.fen(observedState) : placement;
+    if (acceptPlacement(placement, observedFen)) return;
     if (SITE === "chesscom" && recoverChessComSnapshot()) return;
     const startCursor = cursor;
     const sequence = findSkippedSequence(history[cursor].state, placement);
@@ -3355,9 +3457,13 @@
 
   function capturePlacement() {
     const placement = readPlacement();
-    if (!placement || placement === observedPlacement) return;
+    const observedFen = readBoardFen();
+    const observedState = parseFenSafely(observedFen);
+    const token = observedState ? C.fen(observedState) : placement;
+    if (!placement || token === observedStateToken) return;
     observedPlacement = placement;
-    if (!acceptPlacement(placement)) latestUnmatched = placement;
+    observedStateToken = token;
+    if (!acceptPlacement(placement, observedFen)) latestUnmatched = placement;
   }
 
   function boardMutated() {
@@ -3390,34 +3496,49 @@
     boardAnnotationResizeObserver = new ResizeObserver(() => renderBoardAnnotations(active(), currentState(), edgeAtCurrent()));
     boardAnnotationResizeObserver.observe(board);
     observedPlacement = "";
+    observedStateToken = "";
     capturePlacement();
   }
 
-  function pgnHeaders(rep) {
+  function pgnHeaders(rep, rootState) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, ".");
-    return `[Event "${rep.name.replace(/["\\]/g, "")}"]\n[Site "Chess Repertoire Builder"]\n[Date "${date}"]\n[Round "-"]\n[White "${rep.color === "white" ? "Repertoire" : "Opponent"}"]\n[Black "${rep.color === "black" ? "Repertoire" : "Opponent"}"]\n[Result "*"]\n[RepertoireColor "${rep.color}"]\n`;
+    const name = rep.name.replace(/["\\\r\n]/g, " ").trim();
+    const rootFen = C.fen(rootState);
+    const setup = stateKey(rootState) === stateKey(INITIAL) ? "" : `[SetUp "1"]\n[FEN "${rootFen}"]\n`;
+    return `[Event "${name}"]\n[Site "Chess Repertoire Builder"]\n[Date "${date}"]\n[Round "-"]\n[White "${rep.color === "white" ? "Repertoire" : "Opponent"}"]\n[Black "${rep.color === "black" ? "Repertoire" : "Opponent"}"]\n[Result "*"]\n[RepertoireColor "${rep.color}"]\n${setup}`;
   }
 
   function serialize(rep) {
-    function line(key, state, ply) {
+    function line(key, state, path = new Set()) {
+      if (path.has(key)) return "";
+      const nextPath = new Set(path);
+      nextPath.add(key);
       const sorted = sortedEdges(rep, key);
       if (!sorted.length) return "";
       const main = sorted[0];
-      let out = moveText(rep, main, state, ply);
+      let out = moveText(rep, main, state);
       for (const alternative of sorted.slice(1)) {
         const altState = applyUci(state, alternative.uci);
-        let branch = moveText(rep, alternative, state, ply);
-        const continuation = altState ? line(alternative.childKey, altState, ply + 1) : "";
+        let branch = moveText(rep, alternative, state);
+        // PGN represents a finite move tree. Writing the move that returns to
+        // an ancestor preserves the repetition; stopping there keeps export
+        // finite and lets import reconstruct the same position graph.
+        const continuation = altState && !nextPath.has(alternative.childKey)
+          ? line(alternative.childKey, altState, nextPath)
+          : "";
         if (continuation) branch += " " + continuation;
         out += ` (${branch})`;
       }
       const childState = applyUci(state, main.uci);
-      const continuation = childState ? line(main.childKey, childState, ply + 1) : "";
+      const continuation = childState && !nextPath.has(main.childKey)
+        ? line(main.childKey, childState, nextPath)
+        : "";
       if (continuation) out += " " + continuation;
       return out;
     }
+    const rootState = repertoireRootState(rep);
     const rootComment = formatPgnComment(rep, rep.rootKey, rep.positions?.[rep.rootKey]?.comment || "");
-    return pgnHeaders(rep) + "\n" + rootComment + line(rep.rootKey, INITIAL, 0) + " *\n";
+    return pgnHeaders(rep, rootState) + "\n" + rootComment + line(rep.rootKey, rootState) + " *\n";
   }
 
   function chapterDirectives(rep, key) {
@@ -3533,11 +3654,20 @@
     const color = headerColor === "black" ? "black" : "white";
     const fileBase = fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
     const requestedName = pgnHeader(text, "Event") || fileBase || `${color === "white" ? "White" : "Black"} Repertoire`;
-    const rep = repertoireRecord(uniqueRepertoireName(requestedName), color);
+    const setup = pgnHeader(text, "SetUp");
+    const headerFen = pgnHeader(text, "FEN");
+    let state = INITIAL;
+    if (setup === "1" || headerFen) {
+      if (!headerFen) throw new Error("PGN declares SetUp but does not provide a FEN header.");
+      state = parseFenSafely(headerFen);
+      if (!state || !/^([prnbqkPRNBQK1-8]+\/){7}[prnbqkPRNBQK1-8]+\s+[wb]\s+/.test(headerFen)) {
+        throw new Error("PGN FEN header is invalid.");
+      }
+    }
+    const rep = repertoireRecord(uniqueRepertoireName(requestedName), color, state);
     const body = pgnMovetext(text);
     const tokens = body.match(/\{[^}]*\}|\$\d+|\(|\)|1-0|0-1|1\/2-1\/2|\*|\d+\.(?:\.\.)?|[^\s(){}]+/g) || [];
     let index = 0;
-    let state = INITIAL;
     let key = rep.rootKey;
     let lastEdge = null;
     const stack = [];
@@ -3710,7 +3840,9 @@
       const placement = typeof snapshot?.fen === "string" ? snapshot.fen.split(/\s+/)[0] : "";
       if (!placement) return;
       observedPlacement = placement;
-      if (!acceptPlacement(placement) && !recoverChessComSnapshot(snapshot)) latestUnmatched = placement;
+      const observedState = parseFenSafely(snapshot.fen);
+      observedStateToken = observedState ? C.fen(observedState) : placement;
+      if (!acceptPlacement(placement, snapshot.fen) && !recoverChessComSnapshot(snapshot)) latestUnmatched = placement;
       scheduleRender();
     });
     safetyTimer = setInterval(() => {

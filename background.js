@@ -2,6 +2,7 @@
 
 const explorerCache = new Map();
 const CACHE_MS = 10 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 256;
 const AUTH_KEY = "crbLichessOAuth";
 const CLIENT_ID = "chess-repertoire-builder";
 
@@ -76,6 +77,7 @@ async function getExplorer(fen, rating) {
   // whose shape can differ across Explorer response formats.
   const total = moves.reduce((sum, move) => sum + move.games, 0) || reportedTotal;
   const value = { available: true, total, brackets: selected, moves };
+  if (explorerCache.size >= MAX_CACHE_ENTRIES) explorerCache.delete(explorerCache.keys().next().value);
   explorerCache.set(key, { at: Date.now(), value });
   return value;
 }

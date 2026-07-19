@@ -49,7 +49,9 @@
         if (blobUrl) URL.revokeObjectURL(blobUrl);
       }
       await new Promise((resolve, reject) => {
+        let initTimeout = null;
         const fail = message => {
+          if (initTimeout) clearTimeout(initTimeout);
           const error = message instanceof Error ? message : new Error(String(message || "Maia worker failed"));
           lastError = describeError(error);
           console.error("[Chess Repertoire Builder] Maia failed:", error);
@@ -63,7 +65,7 @@
         worker.onerror = event => fail(event.error || event.message || "Maia worker crashed");
         worker.onmessage = event => {
           const message = event.data || {};
-          if (message.type === "ready") { setStatus("ready"); resolve(); return; }
+          if (message.type === "ready") { if (initTimeout) clearTimeout(initTimeout); setStatus("ready"); resolve(); return; }
           if (message.type === "error" && message.id == null) { fail(message.message); return; }
           const request = pending.get(message.id);
           if (!request) return;
@@ -75,6 +77,7 @@
             request.reject(error);
           } else request.resolve(new Float32Array(message.logits));
         };
+        initTimeout = setTimeout(() => fail("Maia initialization timed out"), 30000);
         worker.postMessage({ type: "init", modelUrl: MODEL_URL, runtimeBase: chrome.runtime.getURL("") });
       });
     })();
@@ -161,7 +164,16 @@
     const modelFen = blackToMove ? mirrorFen(fen) : fen;
     const tokens = tokenize(modelFen);
     const id = nextId++;
-    const result = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    const result = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("Maia inference timed out"));
+      }, 30000);
+      pending.set(id, {
+        resolve: value => { clearTimeout(timeout); resolve(value); },
+        reject: error => { clearTimeout(timeout); reject(error); }
+      });
+    });
     worker.postMessage({
       type: "infer",
       id,
