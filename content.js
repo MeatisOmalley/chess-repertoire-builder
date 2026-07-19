@@ -229,9 +229,20 @@
     resolve(result[UI] || {});
   }));
 
-  function chessComContextBlocked() {
+  function chessComAnalysisContext() {
     const path = location.pathname.toLowerCase();
-    return path.includes("/play/online") || path.includes("/game/live") || path.includes("/live");
+    return /^\/analysis(?:\/|$)/.test(path) ||
+      /^\/explorer(?:\/|$)/.test(path) ||
+      /^\/practice(?:\/|$)/.test(path) ||
+      document.documentElement.dataset.crbChessComAnalysis === "1";
+  }
+
+  function chessComContextBlocked() {
+    if (chessComAnalysisContext()) return false;
+    const path = location.pathname.toLowerCase();
+    return /^\/play\/online(?:\/|$)/.test(path) ||
+      /^\/game\/live(?:\/|$)/.test(path) ||
+      /^\/live(?:\/|$)/.test(path);
   }
 
   function chessComCorrespondenceContext() {
@@ -405,7 +416,25 @@
     return rows.join("/");
   }
 
+  function readChessComBridgeSnapshot() {
+    const raw = document.documentElement.dataset.crbChessComState;
+    if (!raw) return null;
+    try {
+      const snapshot = JSON.parse(raw);
+      return snapshot && typeof snapshot === "object" ? snapshot : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readChessComFen() {
+    const snapshot = readChessComBridgeSnapshot();
+    return typeof snapshot?.fen === "string" && snapshot.fen.includes("/") ? snapshot.fen : "";
+  }
+
   function readChessComPlacement(board) {
+    const bridgedFen = readChessComFen();
+    if (bridgedFen) return bridgedFen.split(/\s+/)[0];
     const pieces = new Map();
     for (const element of board.querySelectorAll(".piece, [class*='square-']")) {
       const className = typeof element.className === "string" ? element.className : "";
@@ -3160,6 +3189,112 @@
     return null;
   }
 
+  function parseFenSafely(value) {
+    if (typeof value !== "string" || !value.includes("/")) return null;
+    try { return C.parseFen(value); }
+    catch (_) { return null; }
+  }
+
+  function cleanChessComSan(value) {
+    return String(value || "")
+      .replace(/^\s*\d+\.(?:\.\.)?\s*/, "")
+      .replace(/\$\d+/g, "")
+      .replace(/[!?]+/g, "")
+      .trim();
+  }
+
+  function buildChessComHistory(snapshot) {
+    const current = parseFenSafely(snapshot?.fen);
+    if (!current) return null;
+    const sans = Array.isArray(snapshot.historySans)
+      ? snapshot.historySans.map(cleanChessComSan).filter(Boolean)
+      : [];
+    const fens = Array.isArray(snapshot.historyFens)
+      ? snapshot.historyFens.filter(value => typeof value === "string" && value.includes("/"))
+      : [];
+    let start = parseFenSafely(snapshot.startFen);
+    let fenOffset = 0;
+    if (!start && fens.length === sans.length + 1) {
+      start = parseFenSafely(fens[0]);
+      fenOffset = 1;
+    }
+    if (!start) start = C.parseFen(C.START);
+    const rebuilt = [{ state: start, placement: C.placement(start), move: null }];
+    let state = start;
+    for (let index = 0; index < sans.length; index++) {
+      const move = C.moveSan(state, sans[index]);
+      if (!move) return null;
+      const computed = C.apply(state, move);
+      const authoritative = parseFenSafely(fens[index + fenOffset]);
+      const next = authoritative && C.placement(authoritative) === C.placement(computed) && authoritative.turn === computed.turn
+        ? authoritative
+        : computed;
+      rebuilt.push({
+        state: next,
+        placement: C.placement(next),
+        move: {
+          ...move,
+          san: C.san(state, move),
+          uci: move.from + move.to + (move.promotion || "")
+        }
+      });
+      state = next;
+    }
+    const targetKey = stateKey(current);
+    let targetIndex = -1;
+    for (let index = rebuilt.length - 1; index >= 0; index--) {
+      if (stateKey(rebuilt[index].state) === targetKey) {
+        targetIndex = index;
+        break;
+      }
+    }
+    if (targetIndex < 0 && stateKey(state) === targetKey) targetIndex = rebuilt.length - 1;
+    if (targetIndex < 0) return {
+      history: [{ state: current, placement: C.placement(current), move: null }],
+      cursor: 0,
+      detached: true
+    };
+    rebuilt[targetIndex].state = current;
+    rebuilt[targetIndex].placement = C.placement(current);
+    return { history: rebuilt, cursor: targetIndex, detached: false };
+  }
+
+  function recoverChessComSnapshot(snapshot = readChessComBridgeSnapshot()) {
+    if (SITE !== "chesscom" || !snapshot?.fen) return false;
+    const rebuilt = buildChessComHistory(snapshot);
+    if (!rebuilt) return false;
+    const oldCursor = cursor;
+    const oldKey = stateKey(currentState());
+    const nextHistory = rebuilt.history;
+    const nextCursor = rebuilt.cursor;
+    let oldIndex = -1;
+    for (let index = 0; index < nextHistory.length; index++) {
+      if (stateKey(nextHistory[index].state) === oldKey) { oldIndex = index; break; }
+    }
+    history = nextHistory;
+    cursor = nextCursor;
+    lastTransition = cursor ? { move: history[cursor].move, state: history[cursor].state } : null;
+    observedPlacement = history[cursor].placement;
+    latestUnmatched = "";
+    syncNotice = rebuilt.detached ? "Synced to Chess.com’s current position." : "";
+    const now = performance.now();
+    const navigationIntent = now - lastNavigationIntentAt < 900 && now - lastBoardPointerAt > 180;
+    if (oldIndex >= 0) {
+      if (navigationIntent || nextCursor <= oldIndex) {
+        handleStudyNavigation(oldIndex, nextCursor);
+        handleLivePracticeNavigation(oldIndex, nextCursor);
+      } else if (nextCursor > oldIndex) {
+        if (study.active) processStudyForwardRange(oldIndex + 1, nextCursor);
+        if (livePractice.active) processLivePracticeForwardRange(oldIndex + 1, nextCursor);
+      }
+    } else if (oldCursor !== nextCursor) {
+      handleStudyNavigation(oldCursor, nextCursor);
+      handleLivePracticeNavigation(oldCursor, nextCursor);
+    }
+    scheduleRender();
+    return true;
+  }
+
   function continueLivePracticeFromCurrentPosition(placement) {
     if (!livePractice.active || !placement) return false;
     // Chess.com exposes the piece placement but not a reliable full FEN. When
@@ -3196,6 +3331,7 @@
     if (!placement) return;
     observedPlacement = placement;
     if (acceptPlacement(placement)) return;
+    if (SITE === "chesscom" && recoverChessComSnapshot()) return;
     const startCursor = cursor;
     const sequence = findSkippedSequence(history[cursor].state, placement);
     if (sequence?.length) {
@@ -3566,6 +3702,15 @@
     document.documentElement.addEventListener("crb-lichess-state", () => {
       if (SITE !== "lichess") return;
       capturePlacement();
+      scheduleRender();
+    });
+    document.documentElement.addEventListener("crb-chesscom-state", () => {
+      if (SITE !== "chesscom") return;
+      const snapshot = readChessComBridgeSnapshot();
+      const placement = typeof snapshot?.fen === "string" ? snapshot.fen.split(/\s+/)[0] : "";
+      if (!placement) return;
+      observedPlacement = placement;
+      if (!acceptPlacement(placement) && !recoverChessComSnapshot(snapshot)) latestUnmatched = placement;
       scheduleRender();
     });
     safetyTimer = setInterval(() => {
