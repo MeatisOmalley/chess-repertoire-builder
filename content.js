@@ -47,8 +47,6 @@
   let quietTimer = null;
   let burstPoll = null;
   let renderFrame = null;
-  let observedPlacement = "";
-  let latestUnmatched = "";
   let syncNotice = "";
   let uiState = {};
   let orderingCache = new Map();
@@ -1221,11 +1219,6 @@
     });
   }
 
-  function preferredOrLongestEdge(rep, key) {
-    const edges = sortedEdges(rep, key);
-    return edges.find(edge => edge.preferred) || edges[0] || null;
-  }
-
   function previewToken(state, edge, first) {
     const san = `${edge.san}${nagSymbol(edge.nag)}`;
     if (state.turn === "w") return `${state.full}. ${san}`;
@@ -1369,17 +1362,7 @@
     const steps = [0, 18, 36, 53, 68, 81, 92, 100];
     const percent = steps[Math.min(streak, steps.length - 1)];
     const label = streak === 0 ? "New" : streak === 1 ? "Learning" : streak < 4 ? "Familiar" : streak < 6 ? "Strong" : "Mastered";
-    const next = streak < STUDY_REVIEW_INTERVALS_MS.length
-      ? reviewIntervalForStreak(streak + 1)
-      : STUDY_REVIEW_INTERVALS_MS[STUDY_REVIEW_INTERVALS_MS.length - 1];
-    return { streak, percent, label, next };
-  }
-
-  function formatStudyInterval(ms) {
-    const minutes = Math.round(ms / 60000);
-    if (minutes < 60) return `${minutes} min`;
-    const days = Math.round(minutes / 1440);
-    return `${days} day${days === 1 ? "" : "s"}`;
+    return { streak, percent, label };
   }
 
   function studyScopeMastery(rep) {
@@ -2936,7 +2919,7 @@
       <div class="crb-status">${lastTransition ? `Current move: <b>${esc(last.san)}</b> · ${state.turn === "w" ? "White" : "Black"} to move` : `${state.turn === "w" ? "White" : "Black"} to move`}${syncNotice ? `<div class="crb-sync-note">${esc(syncNotice)}</div>` : ""}</div>
       ${rep && study.active ? renderStudyPanel(rep) : rep && livePractice.active ? renderLivePracticePanel(rep) : ""}
       ${rep && buildTab && !study.active && lastTransition ? renderCurrentAction(rep, edge, last) : ""}
-      ${rep && !study.active && !livePractice.active ? renderPositionMoves(rep, pos, state) : !rep && !liveSetup ? `<div class="crb-empty">${buildTab ? "Create a named White or Black repertoire." : "Select a repertoire to prepare a study session."}</div>` : ""}
+      ${rep && !study.active && !livePractice.active ? renderPositionMoves(rep, pos, state) : !rep ? `<div class="crb-empty">${buildTab ? "Create a named White or Black repertoire." : "Select a repertoire to prepare a study session."}</div>` : ""}
       <input class="crb-file" type="file" accept=".pgn,text/plain" hidden>
       <div class="crb-foot">Stored locally in extension cache. Hidden during live human games.</div></div>`;
     bind();
@@ -3189,7 +3172,6 @@
     const targetKey = observedState ? stateKey(observedState) : "";
     const targetFen = observedState ? C.fen(observedState) : "";
     if (targetFen ? C.fen(history[cursor]?.state) === targetFen : history[cursor]?.placement === placement) {
-      latestUnmatched = "";
       return true;
     }
     const oldCursor = cursor;
@@ -3210,7 +3192,6 @@
         history.push({ state: replayHit.state, placement, move: replayHit.move });
         cursor++;
         lastTransition = replayHit;
-        latestUnmatched = "";
         syncNotice = "";
         if (study.active) processStudyForwardRange(cursor, cursor);
         if (livePractice.active) processLivePracticeForwardRange(cursor, cursor);
@@ -3223,7 +3204,6 @@
     if (known >= 0) {
       cursor = known;
       lastTransition = cursor ? { move: history[cursor].move, state: history[cursor].state } : null;
-      latestUnmatched = "";
       syncNotice = "";
       handleStudyNavigation(oldCursor, cursor);
       handleLivePracticeNavigation(oldCursor, cursor);
@@ -3237,7 +3217,6 @@
     history.push({ state: hit.state, placement, move: hit.move });
     cursor++;
     lastTransition = hit;
-    latestUnmatched = "";
     syncNotice = "";
     if (study.active) processStudyForwardRange(cursor, cursor);
     if (livePractice.active) processLivePracticeForwardRange(cursor, cursor);
@@ -3372,9 +3351,7 @@
     history = nextHistory;
     cursor = nextCursor;
     lastTransition = cursor ? { move: history[cursor].move, state: history[cursor].state } : null;
-    observedPlacement = history[cursor].placement;
     observedStateToken = C.fen(history[cursor].state);
-    latestUnmatched = "";
     syncNotice = rebuilt.detached ? "Synced to Chess.com’s current position." : "";
     const now = performance.now();
     const navigationIntent = now - lastNavigationIntentAt < 900 && now - lastBoardPointerAt > 180;
@@ -3414,7 +3391,6 @@
     history = [{ state, placement, move: null }];
     cursor = 0;
     lastTransition = null;
-    latestUnmatched = "";
     syncNotice = "";
     livePractice.expectedAuto = null;
     livePractice.retryAuto = null;
@@ -3429,7 +3405,6 @@
     const placement = readPlacement();
     if (!placement) return;
     const observedFen = readBoardFen();
-    observedPlacement = placement;
     const observedState = parseFenSafely(observedFen);
     observedStateToken = observedState ? C.fen(observedState) : placement;
     if (acceptPlacement(placement, observedFen)) return;
@@ -3442,7 +3417,6 @@
       cursor = history.length - 1;
       const last = sequence[sequence.length - 1];
       lastTransition = { move: last.move, state: last.state };
-      latestUnmatched = "";
       syncNotice = "";
       if (study.active) processStudyForwardRange(startCursor + 1, cursor);
       if (livePractice.active) processLivePracticeForwardRange(startCursor + 1, cursor);
@@ -3450,7 +3424,6 @@
       return;
     }
     if (continueLivePracticeFromCurrentPosition(placement)) return;
-    latestUnmatched = placement;
     syncNotice = "The board changed too quickly to reconstruct the line. Step back to the last recognized position, then replay the missing moves a little more slowly.";
     scheduleRender();
   }
@@ -3461,9 +3434,8 @@
     const observedState = parseFenSafely(observedFen);
     const token = observedState ? C.fen(observedState) : placement;
     if (!placement || token === observedStateToken) return;
-    observedPlacement = placement;
     observedStateToken = token;
-    if (!acceptPlacement(placement, observedFen)) latestUnmatched = placement;
+    acceptPlacement(placement, observedFen);
   }
 
   function boardMutated() {
@@ -3495,7 +3467,6 @@
     boardObserver.observe(board, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style", "data-square"] });
     boardAnnotationResizeObserver = new ResizeObserver(() => renderBoardAnnotations(active(), currentState(), edgeAtCurrent()));
     boardAnnotationResizeObserver.observe(board);
-    observedPlacement = "";
     observedStateToken = "";
     capturePlacement();
   }
@@ -3839,10 +3810,9 @@
       const snapshot = readChessComBridgeSnapshot();
       const placement = typeof snapshot?.fen === "string" ? snapshot.fen.split(/\s+/)[0] : "";
       if (!placement) return;
-      observedPlacement = placement;
       const observedState = parseFenSafely(snapshot.fen);
       observedStateToken = observedState ? C.fen(observedState) : placement;
-      if (!acceptPlacement(placement, snapshot.fen) && !recoverChessComSnapshot(snapshot)) latestUnmatched = placement;
+      acceptPlacement(placement, snapshot.fen) || recoverChessComSnapshot(snapshot);
       scheduleRender();
     });
     safetyTimer = setInterval(() => {
