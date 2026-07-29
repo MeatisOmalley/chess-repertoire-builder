@@ -225,6 +225,7 @@
       if (rep.schemaVersion !== 4) changed = true;
       rep.schemaVersion = 4;
       const seenChapterRoots = new Set();
+      const seenAutomaticChapterNames = new Set();
       const originalChapters = Array.isArray(rep.chapters) ? rep.chapters : [];
       rep.chapters = originalChapters.filter(chapter => {
         if (!chapter?.rootKey || !String(chapter.name || "").trim() || seenChapterRoots.has(chapter.rootKey)) {
@@ -235,6 +236,27 @@
         const type = chapter.type === "auto" ? "auto" : "manual";
         if (chapter.type !== type) changed = true;
         chapter.type = type;
+        if (type === "auto") {
+          const officialName = String(chapter.originalName || chapter.name || "").replace(/\s+/g, " ").trim();
+          const nameKey = officialName.toLocaleLowerCase();
+          if (!officialName || seenAutomaticChapterNames.has(nameKey)) {
+            changed = true;
+            return false;
+          }
+          seenAutomaticChapterNames.add(nameKey);
+          if (chapter.name !== officialName) {
+            chapter.name = officialName;
+            changed = true;
+          }
+          if (chapter.originalName !== officialName) {
+            chapter.originalName = officialName;
+            changed = true;
+          }
+          if ("line" in chapter) {
+            delete chapter.line;
+            changed = true;
+          }
+        }
         return true;
       });
       // Superseded by persisted automatic chapters. Keeping this legacy state
@@ -624,14 +646,18 @@
 
   function createAutomaticChapterForPosition(rep, key) {
     const record = openingChapterIndex.positions?.[key];
-    if (!record?.name) return null;
-    // This runs only when a position is first created. The root-key guard in
-    // addStoredChapter prevents duplicates at this position without hiding a
-    // distinct catalog position that happens to share the same opening name.
-    return addStoredChapter(rep, record.name, key, "auto", {
-      originalName: record.name,
-      eco: record.eco || "",
-      line: record.line || ""
+    const officialName = String(record?.name || "").replace(/\s+/g, " ").trim();
+    if (!officialName) return null;
+    // The catalog can map several positions to the same named opening. A
+    // chapter represents that named opening, not each move sequence that can
+    // reach it, so keep the first matching position only.
+    const existing = (rep.chapters || []).find(chapter =>
+      chapter.type === "auto" && String(chapter.originalName || chapter.name || "").trim().toLocaleLowerCase() === officialName.toLocaleLowerCase()
+    );
+    if (existing) return existing;
+    return addStoredChapter(rep, officialName, key, "auto", {
+      originalName: officialName,
+      eco: record.eco || ""
     });
   }
 
