@@ -334,9 +334,7 @@
   function chessComContextBlocked() {
     if (chessComAnalysisContext()) return false;
     const path = location.pathname.toLowerCase();
-    return /^\/play\/online(?:\/|$)/.test(path) ||
-      /^\/game\/live(?:\/|$)/.test(path) ||
-      /^\/live(?:\/|$)/.test(path);
+    return !/^\/play\/computer(?:\/|$)/.test(path) && !/^\/game\/computer(?:\/|$)/.test(path);
   }
 
   function chessComBoardControlContext() {
@@ -1053,10 +1051,32 @@
       }
       const arrowKey = cursor > targetIndex ? "ArrowLeft" : "ArrowRight";
       const preferBeginning = arrowKey === "ArrowLeft" && targetIndex === 0;
+      const beforeCursor = cursor;
+      const beforeKey = stateKey(currentState());
+      const actionDeadline = performance.now() + 700;
       lastNavigationIntentAt = performance.now();
       const clicked = clickNavigationControl(arrowKey, preferBeginning && attempts === 1);
       if (!clicked) dispatchArrow(arrowKey);
-      chapterNavigation.timer = setTimeout(tick, 90);
+      // Wait for this specific action to be reflected by the host before
+      // issuing another one. Sending arrows on a fixed interval can queue
+      // multiple Chess.com navigations and overshoot the selected chapter.
+      const waitForAction = () => {
+        if (!chapterNavigation) return;
+        if (cursor === targetIndex && stateKey(currentState()) === targetKey) {
+          finishChapterNavigation(true);
+          return;
+        }
+        if (cursor !== beforeCursor || stateKey(currentState()) !== beforeKey) {
+          tick();
+          return;
+        }
+        if (performance.now() >= actionDeadline) {
+          tick();
+          return;
+        }
+        chapterNavigation.timer = setTimeout(waitForAction, 30);
+      };
+      chapterNavigation.timer = setTimeout(waitForAction, 30);
     };
     tick();
   }
@@ -3811,6 +3831,9 @@
     document.addEventListener("keydown", event => {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
         lastNavigationIntentAt = performance.now();
+        if (chapterNavigation && event.isTrusted) {
+          finishChapterNavigation(false, "Chapter navigation cancelled by board navigation.");
+        }
       }
     }, true);
     document.addEventListener("pointerdown", event => {
@@ -3833,6 +3856,10 @@
     });
     document.documentElement.addEventListener("crb-chesscom-state", () => {
       if (SITE !== "chesscom") return;
+      if (definitelyUnsafeLiveContext()) {
+        teardownForUnsafeContext();
+        return;
+      }
       const snapshot = readChessComBridgeSnapshot();
       const placement = typeof snapshot?.fen === "string" ? snapshot.fen.split(/\s+/)[0] : "";
       if (!placement) return;

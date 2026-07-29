@@ -15,9 +15,7 @@
   function blockedLiveContext() {
     if (analysisContext()) return false;
     const path = location.pathname.toLowerCase();
-    return /^\/play\/online(?:\/|$)/.test(path) ||
-      /^\/game\/live(?:\/|$)/.test(path) ||
-      /^\/live(?:\/|$)/.test(path);
+    return !/^\/play\/computer(?:\/|$)/.test(path) && !/^\/game\/computer(?:\/|$)/.test(path);
   }
 
   function findBoard() {
@@ -68,7 +66,8 @@
 
   function snapshot() {
     root.dataset.crbChessComAnalysis = analysisContext() ? "1" : "0";
-    if (blockedLiveContext()) return null;
+    root.dataset.crbChessComBlocked = blockedLiveContext() ? "1" : "0";
+    if (root.dataset.crbChessComBlocked === "1") return null;
     const board = findBoard();
     const game = findGame(board);
     if (!game) return null;
@@ -82,7 +81,13 @@
 
   function publish() {
     const state = snapshot();
-    if (!state) return;
+    if (!state) {
+      if (root.dataset.crbChessComBlocked === "1" && lastSignal !== "__crb_blocked__") {
+        lastSignal = "__crb_blocked__";
+        root.dispatchEvent(new Event("crb-chesscom-state"));
+      }
+      return;
+    }
     const signal = JSON.stringify(state);
     if (signal === lastSignal) return;
     lastSignal = signal;
