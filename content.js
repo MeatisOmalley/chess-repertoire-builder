@@ -3774,10 +3774,9 @@
     if (!file) return;
     try {
       const text = await file.text();
-      const addAutomaticChapters = confirm("Automatically create opening chapters for recognized positions in this PGN?\n\nExplicit Chapter: Name comments, and each game of a multi-game file, become chapters either way.");
-      const { rep, skippedLines, skippedGames, unchapteredGames } = importPgn(text, file.name, { addAutomaticChapters });
+      const addAutomaticChapters = confirm("Automatically create opening chapters for recognized positions in this PGN?\n\nExplicit Chapter: Name comments will import either way.");
+      const { rep, skippedLines, skippedGames } = importPgn(text, file.name, { addAutomaticChapters });
       const notes = [];
-      if (unchapteredGames) notes.push(`${unchapteredGames} game${unchapteredGames === 1 ? "" : "s"} added no position of ${unchapteredGames === 1 ? "its" : "their"} own for a chapter (a position holds one chapter); ${unchapteredGames === 1 ? "its" : "their"} moves were still imported.`);
       if (skippedLines) notes.push(`${skippedLines} line${skippedLines === 1 ? "" : "s"} stopped at a move that could not be read; the moves after it were not imported.`);
       if (skippedGames) notes.push(`${skippedGames} game${skippedGames === 1 ? "" : "s"} started from a position this repertoire does not reach and ${skippedGames === 1 ? "was" : "were"} skipped.`);
       alert(`PGN imported as new repertoire “${rep.name}”.${notes.length ? `\n\n${notes.join("\n")}` : ""}`);
@@ -3878,62 +3877,21 @@
     const rep = repertoireRecord(uniqueRepertoireName(requestedName), color, pgnStartState(firstHeaders));
     let skippedLines = 0;
     let skippedGames = 0;
-    let unchapteredGames = 0;
-    const studyName = pgnHeader(firstHeaders, "StudyName");
-    const events = games.map(game => pgnHeader(game.headers, "Event"));
-    const distinctEvents = new Set(events.filter(Boolean)).size > 1;
-    const imported = [];
-    for (const [gameIndex, game] of games.entries()) {
+    for (const game of games) {
       const start = pgnStartState(game.headers);
-      const startKey = stateKey(start);
       // Later games join the tree only where it already reaches their start.
-      if (startKey !== rep.rootKey && !rep.positions[startKey]) {
+      if (stateKey(start) !== rep.rootKey && !rep.positions[stateKey(start)]) {
         skippedGames++;
         continue;
       }
-      const result = importMovetext(rep, game.body, start, addAutomaticChapters);
-      skippedLines += result.skippedLines;
-      imported.push({ gameIndex, game, mainline: [startKey, ...result.mainlineKeys] });
-    }
-    // Each game of a multi-game file is a chapter, anchored where it departs
-    // from every other game: the first position on its mainline (its start
-    // included) that no other game's mainline passes through, else, for a
-    // line another game covers whole, the end of its mainline.
-    if (games.length > 1) {
-      const mainlineCount = new Map();
-      for (const entry of imported) for (const key of new Set(entry.mainline)) mainlineCount.set(key, (mainlineCount.get(key) || 0) + 1);
-      for (const { gameIndex, game, mainline } of imported) {
-        const anchor = mainline.find(key => mainlineCount.get(key) === 1) || mainline[mainline.length - 1];
-        // Lichess writes Event as "Study: Chapter".
-        const event = distinctEvents && studyName && events[gameIndex].startsWith(`${studyName}:`)
-          ? events[gameIndex].slice(studyName.length + 1).trim()
-          : distinctEvents ? events[gameIndex] : "";
-        const name = pgnHeader(game.headers, "ChapterName") || event || `Game ${gameIndex + 1}`;
-        if (!anchor || anchor === rep.rootKey || !nameGameChapter(rep, anchor, name)) unchapteredGames++;
-      }
+      skippedLines += importMovetext(rep, game.body, start, addAutomaticChapters);
     }
     rep.updatedAt = Date.now();
     data.repertoires.push(rep);
     data.activeId = rep.id;
     save();
     render();
-    return { rep, skippedLines, skippedGames, unchapteredGames };
-  }
-
-  // A position holds one chapter. A game's name replaces a catalog name there
-  // but never an explicit one (a Chapter: comment or an earlier game).
-  function nameGameChapter(rep, key, name) {
-    const existing = (rep.chapters || []).find(chapter => chapter.rootKey === key);
-    if (existing && existing.type !== "auto") return false;
-    if (existing) {
-      existing.type = "manual";
-      existing.name = String(name).replace(/\s+/g, " ").trim();
-      delete existing.originalName;
-      delete existing.eco;
-      existing.updatedAt = Date.now();
-      return true;
-    }
-    return !!addStoredChapter(rep, name, key, "manual");
+    return { rep, skippedLines, skippedGames };
   }
 
   function importMovetext(rep, body, startState, addAutomaticChapters) {
@@ -3946,7 +3904,6 @@
     // position, so the rest is dropped (and reported) rather than guessed.
     let broken = false;
     let skippedLines = 0;
-    const mainlineKeys = [];
     const stack = [];
     while (index < tokens.length) {
       const token = tokens[index++];
@@ -4007,12 +3964,11 @@
       const childWasStored = !!rep.positions[childKey];
       ensurePos(rep, childKey);
       if (addAutomaticChapters && !childWasStored) createAutomaticChapterForPosition(rep, childKey);
-      if (!stack.length) mainlineKeys.push(childKey);
       lastEdge = { edge, parentState: state, parentKey: key };
       state = next;
       key = childKey;
     }
-    return { skippedLines, mainlineKeys };
+    return skippedLines;
   }
 
   async function installBundledOfficialRepertoires() {
