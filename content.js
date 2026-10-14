@@ -62,6 +62,7 @@
   let boardPointerDown = false;
   let safetyTimer = null;
   let chapterNavigation = null;
+  let includedMoveSyncTimer = null;
   let lastChapterAutoSyncToken = "";
   let observedStateToken = "";
   let livePracticeSession = 0;
@@ -557,7 +558,10 @@
 
   function readLichessPlacement(board) {
     const bridgedFen = document.documentElement.dataset.crbLichessFen;
-    if (lichessAnalysisCapable() && bridgedFen?.includes("/")) return bridgedFen.split(/\s+/)[0];
+    // The bridge can read Chessground's FEN even when Lichess's optional
+    // playUci API is unavailable. Never fall back to transient piece DOM in
+    // that case: touching or animating the board can briefly misreport it.
+    if (bridgedFen?.includes("/")) return bridgedFen.split(/\s+/)[0];
     if (boardPointerDown || board.querySelector("piece.dragging, piece.anim, piece.fading")) return "";
     const rect = board.getBoundingClientRect();
     if (!rect.width || !rect.height) return "";
@@ -1008,11 +1012,21 @@
   function syncChapterSelectionToBoard(rep, chapters) {
     if (!rep || chapterNavigation) return;
     const key = stateKey(currentState());
+    let selectedId = selectedChapterId(rep);
+    const selected = selectedId ? chapters.find(chapter => chapter.id === selectedId) : null;
+    // Clear a departed chapter before consulting the cache so it can be
+    // selected again after the user navigates back.
+    if (selected && selected.rootKey !== key) {
+      setSelectedChapter(rep, "");
+      selectedId = "";
+      lastChapterAutoSyncToken = "";
+    }
     const token = `${rep.id}|${key}`;
     if (lastChapterAutoSyncToken === token) return;
     lastChapterAutoSyncToken = token;
-    const chapter = exactChapterAtPosition(chapters, key, selectedChapterId(rep));
-    if (!chapter || selectedChapterId(rep) === chapter.id) return;
+    const chapter = exactChapterAtPosition(chapters, key, selectedId);
+    if (!chapter) return;
+    if (selectedId === chapter.id) return;
     setSelectedChapter(rep, chapter.id);
   }
 
@@ -1037,6 +1051,25 @@
     render();
   }
 
+  function waitForChapterBoardChange(beforePlacement, callback) {
+    const deadline = performance.now() + 600;
+    const poll = () => {
+      if (!chapterNavigation) return;
+      const placement = readPlacement();
+      if (placement && placement !== beforePlacement) {
+        acceptPlacement(placement);
+        callback(true);
+        return;
+      }
+      if (performance.now() >= deadline) {
+        callback(false);
+        return;
+      }
+      chapterNavigation.timer = setTimeout(poll, 10);
+    };
+    chapterNavigation.timer = setTimeout(poll, 10);
+  }
+
   function navigateChapterHistory(targetIndex, targetKey) {
     let attempts = 0;
     const tick = () => {
@@ -1051,32 +1084,14 @@
       }
       const arrowKey = cursor > targetIndex ? "ArrowLeft" : "ArrowRight";
       const preferBeginning = arrowKey === "ArrowLeft" && targetIndex === 0;
-      const beforeCursor = cursor;
-      const beforeKey = stateKey(currentState());
-      const actionDeadline = performance.now() + 700;
+      const beforePlacement = readPlacement();
       lastNavigationIntentAt = performance.now();
       const clicked = clickNavigationControl(arrowKey, preferBeginning && attempts === 1);
       if (!clicked) dispatchArrow(arrowKey);
-      // Wait for this specific action to be reflected by the host before
-      // issuing another one. Sending arrows on a fixed interval can queue
-      // multiple Chess.com navigations and overshoot the selected chapter.
-      const waitForAction = () => {
-        if (!chapterNavigation) return;
-        if (cursor === targetIndex && stateKey(currentState()) === targetKey) {
-          finishChapterNavigation(true);
-          return;
-        }
-        if (cursor !== beforeCursor || stateKey(currentState()) !== beforeKey) {
-          tick();
-          return;
-        }
-        if (performance.now() >= actionDeadline) {
-          tick();
-          return;
-        }
-        chapterNavigation.timer = setTimeout(waitForAction, 30);
-      };
-      chapterNavigation.timer = setTimeout(waitForAction, 30);
+      waitForChapterBoardChange(beforePlacement, moved => {
+        if (moved) tick();
+        else finishChapterNavigation(false, "Chess.com did not acknowledge a chapter navigation move.");
+      });
     };
     tick();
   }
@@ -1095,10 +1110,14 @@
         callback(false);
         return;
       }
+      const beforePlacement = placement;
       lastNavigationIntentAt = performance.now();
       const clicked = clickNavigationControl("ArrowLeft", attempts === 1);
       if (!clicked) dispatchArrow("ArrowLeft");
-      chapterNavigation.timer = setTimeout(tick, 90);
+      waitForChapterBoardChange(beforePlacement, moved => {
+        if (moved) tick();
+        else callback(false);
+      });
     };
     tick();
   }
@@ -1118,16 +1137,16 @@
     const waitForMove = () => {
       if (!chapterNavigation) return;
       if (stateKey(currentState()) === step.childKey) {
-        chapterNavigation.timer = setTimeout(() => playChapterSetupPath(path, index + 1), 65);
+        chapterNavigation.timer = setTimeout(() => playChapterSetupPath(path, index + 1), 20);
         return;
       }
       if (attempts++ >= 30) {
         finishChapterNavigation(false, `${SITE_LABEL} did not accept a chapter setup move.`);
         return;
       }
-      chapterNavigation.timer = setTimeout(waitForMove, 60);
+      chapterNavigation.timer = setTimeout(waitForMove, 20);
     };
-    chapterNavigation.timer = setTimeout(waitForMove, 60);
+    chapterNavigation.timer = setTimeout(waitForMove, 20);
   }
 
   function navigateToSelectedChapter(chapter) {
@@ -3071,7 +3090,7 @@
     $(".crb-file", root)?.addEventListener("change", importFile);
     $$('[data-play]', root).forEach(button => button.onclick = event => {
       event.stopPropagation();
-      playMove(button.dataset.play);
+      playIncludedContinuation(button.dataset.play);
     });
     $$('details[data-line-id]', root).forEach(details => details.addEventListener("toggle", () => {
       uiState.expandedLines ||= {};
@@ -3195,6 +3214,42 @@
     const toPoint = center(to);
     board.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: fromPoint.x, clientY: fromPoint.y, pointerId: 1, buttons: 1 }));
     board.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: toPoint.x, clientY: toPoint.y, pointerId: 1, buttons: 0 }));
+    return true;
+  }
+
+  // A host board can accept a synthetic move before its mutation observer has
+  // reported the new position. Confirm this explicit continuation click so the
+  // matching card is removed immediately instead of remaining playable.
+  function playIncludedContinuation(uci) {
+    const state = currentState();
+    const expected = applyUci(state, uci);
+    if (!expected || !playMove(uci)) return false;
+
+    if (includedMoveSyncTimer) {
+      clearTimeout(includedMoveSyncTimer);
+      includedMoveSyncTimer = null;
+    }
+    const expectedKey = stateKey(expected);
+    const expectedPlacement = C.placement(expected);
+    const deadline = performance.now() + 700;
+    const confirm = () => {
+      includedMoveSyncTimer = null;
+      // A normal observer (or another user action) has already changed the
+      // local state, so this click no longer owns synchronization.
+      if (stateKey(currentState()) !== stateKey(state)) return;
+      const observedFen = readBoardFen();
+      const observedState = parseFenSafely(observedFen);
+      const placement = readPlacement();
+      const reachedExpectedPosition = observedState
+        ? stateKey(observedState) === expectedKey
+        : placement === expectedPlacement;
+      if (reachedExpectedPosition) {
+        acceptPlacement(expectedPlacement, C.fen(expected));
+        return;
+      }
+      if (performance.now() < deadline) includedMoveSyncTimer = setTimeout(confirm, 20);
+    };
+    includedMoveSyncTimer = setTimeout(confirm, 20);
     return true;
   }
 
@@ -3454,6 +3509,10 @@
     const observedState = parseFenSafely(observedFen);
     observedStateToken = observedState ? C.fen(observedState) : placement;
     if (acceptPlacement(placement, observedFen)) return;
+    // Lichess supplies the full board state. It is authoritative even when
+    // the extension cannot derive the intervening move path, so do not try
+    // to reconstruct from animated DOM positions or show a false warning.
+    if (SITE === "lichess" && observedState) return;
     if (SITE === "chesscom" && recoverChessComSnapshot()) return;
     const startCursor = cursor;
     const sequence = findSkippedSequence(history[cursor].state, placement);
@@ -3828,14 +3887,18 @@
       saveUi();
     }));
     window.addEventListener("scroll", () => renderBoardAnnotations(active(), currentState(), edgeAtCurrent()), true);
-    document.addEventListener("keydown", event => {
+    const handleNavigationKey = event => {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
         lastNavigationIntentAt = performance.now();
         if (chapterNavigation && event.isTrusted) {
-          finishChapterNavigation(false, "Chapter navigation cancelled by board navigation.");
+          // Stop before Chess.com handles the real key; the key itself remains
+          // available for the user's intended board navigation.
+          clearChapterNavigation();
+          syncNotice = "";
         }
       }
-    }, true);
+    };
+    window.addEventListener("keydown", handleNavigationKey, true);
     document.addEventListener("pointerdown", event => {
       const board = findBoard();
       const panel = $("#" + ROOT);
