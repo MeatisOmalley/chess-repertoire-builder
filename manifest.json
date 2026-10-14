@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chess Repertoire Builder",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "Build, organize, and practice chess repertoires on Chess.com and Lichess.",
   "background": { "service_worker": "background.js" },
   "content_scripts": [
