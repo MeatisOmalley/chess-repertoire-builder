@@ -4,7 +4,11 @@
   const clone=o=>JSON.parse(JSON.stringify(o));
   function parseFen(fen){const [pp,turn='w',cast='-',ep='-',half='0',full='1']=fen.split(/\s+/);const b={};let r=8;for(const row of pp.split('/')){let f=0;for(const c of row){if(/\d/.test(c))f+=+c;else b[FILES[f++]+r]=c;}r--;}return{b,turn,cast,ep,half:+half,full:+full};}
   function placement(s){let out=[];for(let r=8;r>=1;r--){let row='',n=0;for(const f of FILES){const p=s.b[f+r];if(!p)n++;else{if(n){row+=n;n=0;}row+=p;}}if(n)row+=n;out.push(row);}return out.join('/');}
-  function fen(s){return `${placement(s)} ${s.turn} ${s.cast||'-'} ${s.ep||'-'} ${s.half} ${s.full}`;}
+  // FEN names an en-passant square only when a legal capture onto it exists
+  // (the X-FEN rule Lichess follows). Positions therefore compare equal however
+  // they were reached: 1.e4 e6 2.d4 and 1.d4 e6 2.e4 are one position.
+  function legalEp(s){if(!s.ep||s.ep==='-')return '-';const f=FILES.indexOf(s.ep[0]),r=+s.ep[1];if(f<0||r!==(s.turn==='w'?6:3))return '-';const pawn=s.turn==='w'?'P':'p',from_r=s.turn==='w'?5:4;if(s.b[s.ep[0]+from_r]!==(s.turn==='w'?'p':'P'))return '-';for(const df of [-1,1]){const from=sq(f+df,from_r);if(from&&s.b[from]===pawn&&!inCheck(apply(s,{from,to:s.ep,promotion:null,flags:'ep',captured:null,piece:'p'}),s.turn))return s.ep;}return '-';}
+  function fen(s){return `${placement(s)} ${s.turn} ${s.cast||'-'} ${legalEp(s)} ${s.half} ${s.full}`;}
   const color=p=>p===p.toUpperCase()?'w':'b', type=p=>p.toLowerCase(), opp=c=>c==='w'?'b':'w';
   const sq=(f,r)=>f>=0&&f<8&&r>=1&&r<=8?FILES[f]+r:null;
   function attacked(s,target,by){for(const [from,p] of Object.entries(s.b)){if(color(p)!==by)continue;const ff=FILES.indexOf(from[0]),fr=+from[1],tf=FILES.indexOf(target[0]),tr=+target[1],df=tf-ff,dr=tr-fr,t=type(p);if(t==='p'&&dr===(by==='w'?1:-1)&&Math.abs(df)===1)return true;if(t==='n'&&[[1,2],[2,1]].some(([a,b])=>Math.abs(df)===a&&Math.abs(dr)===b))return true;if(t==='k'&&Math.max(Math.abs(df),Math.abs(dr))===1)return true;if('brq'.includes(t)){const diag=Math.abs(df)===Math.abs(dr),line=df===0||dr===0;if((t==='b'&&!diag)||(t==='r'&&!line)||(t==='q'&&!diag&&!line))continue;const sf=Math.sign(df),sr=Math.sign(dr);let f=ff+sf,r=fr+sr,clear=true;while(f!==tf||r!==tr){if(s.b[sq(f,r)]){clear=false;break;}f+=sf;r+=sr;}if(clear)return true;}}
@@ -22,6 +26,8 @@
   function san(s,m){if(m.flags.includes('k'))return 'O-O'+suffix(s,m);if(m.flags.includes('q'))return 'O-O-O'+suffix(s,m);const p=s.b[m.from],t=type(p),capture=!!(m.captured||m.flags.includes('ep'));let x='';if(t!=='p'){x=t.toUpperCase();const peers=legal(s).filter(z=>z.to===m.to&&z.from!==m.from&&z.piece===t);if(peers.length){const sameFile=peers.some(z=>z.from[0]===m.from[0]),sameRank=peers.some(z=>z.from[1]===m.from[1]);x+=!sameFile?m.from[0]:!sameRank?m.from[1]:m.from;}}else if(capture)x=m.from[0];x+=(capture?'x':'')+m.to;if(m.promotion)x+='='+m.promotion.toUpperCase();return x+suffix(s,m);}
   function suffix(s,m){const n=apply(s,m);if(!inCheck(n,n.turn))return '';return legal(n).length?'#'.replace('#','+'): '#';}
   function matchTransition(fromState,toPlacement){const hits=legal(fromState).filter(m=>placement(apply(fromState,m))===toPlacement);if(hits.length!==1)return null;const m=hits[0];return{move:{...m,san:san(fromState,m),uci:m.from+m.to+(m.promotion||'')},state:apply(fromState,m)};}
-  function moveSan(s,text){const norm=String(text).replace(/[!?+#]+$/g,'').replace(/0/g,'O');return legal(s).find(m=>san(s,m).replace(/[+#]$/,'')===norm)||null;}
+  // Exact SAN first; then the lenient forms other tools write (e8Q, Ngf3 when
+  // unambiguous, Pe4, exd6e.p.), accepted only when they name one legal move.
+  function moveSan(s,text){const norm=String(text).replace(/[!?+#]+$/g,'').replace(/e\.?p\.?$/i,'').replace(/0/g,'O').trim();const moves=legal(s);const exact=moves.find(m=>san(s,m).replace(/[+#]$/,'')===norm);if(exact)return exact;const p=norm.match(/^([PNBRQK])?([a-h])?([1-8])?[x:-]?([a-h][1-8])(?:=?([NBRQnbrq]))?$/);if(!p)return null;const piece=(p[1]||'P').toLowerCase(),promo=p[5]?p[5].toLowerCase():null;const hits=moves.filter(m=>m.piece===piece&&m.to===p[4]&&(!p[2]||m.from[0]===p[2])&&(!p[3]||m.from[1]===p[3])&&(m.promotion||null)===promo);return hits.length===1?hits[0]:null;}
   window.CRBChess={START,parseFen,fen,placement,legal,apply,san,matchTransition,moveSan};
 })();

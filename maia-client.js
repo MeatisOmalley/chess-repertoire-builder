@@ -160,6 +160,8 @@
 
   async function logitsFor(fen, selfRating, opponentRating) {
     await ensureWorker();
+    // The worker can crash between becoming ready and this request.
+    if (!worker) throw new Error(lastError || "Maia worker is not running");
     const blackToMove = fen.split(/\s+/)[1] === "b";
     const modelFen = blackToMove ? mirrorFen(fen) : fen;
     const tokens = tokenize(modelFen);

@@ -201,6 +201,7 @@
     saveQueue = saveQueue.then(async () => {
       const stored = await chrome.storage.local.get(STORE);
       data = mergeData(base, local, stored[STORE]);
+      migrateData();
       persistedData = cloneValue(data);
       await chrome.storage.local.set({ [STORE]: data });
     }).catch(error => console.error("[Chess Repertoire Builder] Could not save repertoires:", error));
@@ -216,6 +217,69 @@
     });
   };
 
+  // Keys written before schema 5 always named the en-passant square after a
+  // double push. Re-derive them through the current FEN writer.
+  function canonicalKey(key) {
+    try { return stateKey(C.parseFen(`${key} 0 1`)); }
+    catch (_) { return key; }
+  }
+
+  function rekeyRepertoire(rep) {
+    const positions = {};
+    for (const [oldKey, pos] of Object.entries(rep.positions || {})) {
+      const key = canonicalKey(oldKey);
+      const target = positions[key] || (positions[key] = { key, moves: {}, comment: "" });
+      const comment = String(pos?.comment || "").trim();
+      if (comment && !target.comment.includes(comment)) target.comment = target.comment ? `${target.comment}\n\n${comment}` : comment;
+      for (const [uci, edge] of Object.entries(pos?.moves || {})) {
+        edge.childKey = canonicalKey(edge.childKey);
+        const existing = target.moves[uci];
+        if (!existing) {
+          target.moves[uci] = edge;
+          continue;
+        }
+        // Two old keys for one position (a transposition): keep one edge.
+        if (!existing.comment && edge.comment) existing.comment = edge.comment;
+        if (existing.nag == null && edge.nag != null) existing.nag = edge.nag;
+        existing.preferred = !!(existing.preferred || edge.preferred);
+        existing.createdAt = Math.min(existing.createdAt || Infinity, edge.createdAt || Infinity) || Date.now();
+        existing.updatedAt = Math.max(existing.updatedAt || 0, edge.updatedAt || 0);
+      }
+    }
+    rep.positions = positions;
+    rep.rootKey = canonicalKey(rep.rootKey);
+    for (const chapter of rep.chapters || []) if (chapter?.rootKey) chapter.rootKey = canonicalKey(chapter.rootKey);
+  }
+
+  function migrateStudyData() {
+    if (!studyData || typeof studyData !== "object") studyData = { repertoires: {} };
+    studyData.repertoires ||= {};
+    if (studyData.keyVersion === 2) return false;
+    for (const store of Object.values(studyData.repertoires)) {
+      const positions = {};
+      for (const [key, stat] of Object.entries(store?.positions || {})) {
+        const canonical = canonicalKey(key);
+        const existing = positions[canonical];
+        if (!existing || (Number(stat?.attempts) || 0) > (Number(existing.attempts) || 0)) positions[canonical] = stat;
+      }
+      const opponentEdges = {};
+      for (const [id, stat] of Object.entries(store?.opponentEdges || {})) {
+        const split = id.lastIndexOf("|");
+        const canonical = split > 0 ? `${canonicalKey(id.slice(0, split))}${id.slice(split)}` : id;
+        const existing = opponentEdges[canonical];
+        opponentEdges[canonical] = existing
+          ? { seen: (Number(existing.seen) || 0) + (Number(stat?.seen) || 0), lastSeenAt: Math.max(Number(existing.lastSeenAt) || 0, Number(stat?.lastSeenAt) || 0) }
+          : stat;
+      }
+      if (store) {
+        store.positions = positions;
+        store.opponentEdges = opponentEdges;
+      }
+    }
+    studyData.keyVersion = 2;
+    return true;
+  }
+
   function migrateData() {
     let changed = false;
     if (!data.deletedRepertoires || typeof data.deletedRepertoires !== "object") {
@@ -223,8 +287,11 @@
       changed = true;
     }
     for (const rep of data.repertoires || []) {
-      if (rep.schemaVersion !== 4) changed = true;
-      rep.schemaVersion = 4;
+      if (rep.schemaVersion !== 5) {
+        changed = true;
+        rekeyRepertoire(rep);
+      }
+      rep.schemaVersion = 5;
       const seenChapterRoots = new Set();
       const seenAutomaticChapterNames = new Set();
       const originalChapters = Array.isArray(rep.chapters) ? rep.chapters : [];
@@ -304,15 +371,27 @@
   }
 
   const load = () => new Promise(resolve => chrome.storage.local.get([STORE, UI, STUDY_STORE], result => {
+    // The merge base must be what storage holds, not the migrated copy:
+    // otherwise save() sees "storage changed, this tab did not" and writes
+    // the unmigrated repertoires back over the migration.
+    const stored = result[STORE] ? cloneValue(result[STORE]) : null;
     if (result[STORE]) data = result[STORE];
     if (result[STUDY_STORE]) studyData = result[STUDY_STORE];
     migrationDirty = migrateData();
-    persistedData = cloneValue(data);
+    if (migrateStudyData()) saveStudy();
+    persistedData = stored || cloneValue(data);
     resolve(result[UI] || {});
   }));
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes[STORE]?.newValue) return;
+    if (area !== "local") return;
+    // Study progress is written whole after every graded move, so adopt
+    // another tab's write instead of overwriting it with a stale copy later.
+    if (changes[STUDY_STORE]?.newValue && !sameValue(changes[STUDY_STORE].newValue, studyData)) {
+      studyData = changes[STUDY_STORE].newValue;
+      if (migrateStudyData()) saveStudy();
+    }
+    if (!changes[STORE]?.newValue) return;
     const remote = changes[STORE].newValue;
     if (sameValue(remote, data)) {
       persistedData = cloneValue(remote);
@@ -601,7 +680,7 @@
   function repertoireRecord(name, color, rootState = INITIAL) {
     return {
       id: uid(),
-      schemaVersion: 4,
+      schemaVersion: 5,
       name: name.trim() || `${color === "white" ? "White" : "Black"} Repertoire`,
       color,
       createdAt: Date.now(),
@@ -1090,7 +1169,7 @@
       if (!clicked) dispatchArrow(arrowKey);
       waitForChapterBoardChange(beforePlacement, moved => {
         if (moved) tick();
-        else finishChapterNavigation(false, "Chess.com did not acknowledge a chapter navigation move.");
+        else finishChapterNavigation(false, `${SITE_LABEL} did not acknowledge a chapter navigation move.`);
       });
     };
     tick();
@@ -3254,17 +3333,25 @@
   }
 
   function nearestKnownIndex(placement, targetKey = "", targetFen = "") {
-    let best = -1;
-    let bestDistance = Infinity;
-    for (let index = 0; index < history.length; index++) {
-      if (targetFen ? C.fen(history[index].state) !== targetFen : targetKey ? stateKey(history[index].state) !== targetKey : history[index].placement !== placement) continue;
-      const distance = Math.abs(index - cursor);
-      if (distance < bestDistance || (distance === bestDistance && index > best)) {
-        best = index;
-        bestDistance = distance;
+    // The exact FEN (clocks included) tells repeated positions apart; the
+    // position key still matches when a site's move counters differ.
+    const tests = targetFen
+      ? [entry => C.fen(entry.state) === targetFen, entry => stateKey(entry.state) === targetKey]
+      : [targetKey ? entry => stateKey(entry.state) === targetKey : entry => entry.placement === placement];
+    for (const test of tests) {
+      let best = -1;
+      let bestDistance = Infinity;
+      for (let index = 0; index < history.length; index++) {
+        if (!test(history[index])) continue;
+        const distance = Math.abs(index - cursor);
+        if (distance < bestDistance || (distance === bestDistance && index > best)) {
+          best = index;
+          bestDistance = distance;
+        }
       }
+      if (best >= 0) return best;
     }
-    return best;
+    return -1;
   }
 
   function acceptPlacement(placement, observedFen = "") {
@@ -3272,7 +3359,7 @@
     const observedState = parseFenSafely(observedFen);
     const targetKey = observedState ? stateKey(observedState) : "";
     const targetFen = observedState ? C.fen(observedState) : "";
-    if (targetFen ? C.fen(history[cursor]?.state) === targetFen : history[cursor]?.placement === placement) {
+    if (targetFen ? nearestKnownIndex(placement, targetKey, targetFen) === cursor : history[cursor]?.placement === placement) {
       return true;
     }
     const oldCursor = cursor;
@@ -3368,7 +3455,9 @@
   }
 
   function parseFenSafely(value) {
-    if (typeof value !== "string" || !value.includes("/")) return null;
+    // A placement-only string is not a position: parsing it would invent
+    // White to move with no castling rights and fail every comparison.
+    if (typeof value !== "string" || !/^\s*\S+\/\S+\s+[wb](?:\s|$)/.test(value)) return null;
     try { return C.parseFen(value); }
     catch (_) { return null; }
   }
@@ -3502,6 +3591,17 @@
     return true;
   }
 
+  function adoptObservedPosition(observedState) {
+    history = [{ state: observedState, placement: C.placement(observedState), move: null }];
+    cursor = 0;
+    lastTransition = null;
+    observedStateToken = C.fen(observedState);
+    syncNotice = `Synced to ${SITE_LABEL}’s current position.`;
+    // Replacing the history is always navigation, whatever the cursor was.
+    handleStudyNavigation(-1, cursor);
+    scheduleRender();
+  }
+
   function recoverLatestPlacement() {
     const placement = readPlacement();
     if (!placement) return;
@@ -3509,13 +3609,11 @@
     const observedState = parseFenSafely(observedFen);
     observedStateToken = observedState ? C.fen(observedState) : placement;
     if (acceptPlacement(placement, observedFen)) return;
-    // Lichess supplies the full board state. It is authoritative even when
-    // the extension cannot derive the intervening move path, so do not try
-    // to reconstruct from animated DOM positions or show a false warning.
-    if (SITE === "lichess" && observedState) return;
     if (SITE === "chesscom" && recoverChessComSnapshot()) return;
     const startCursor = cursor;
-    const sequence = findSkippedSequence(history[cursor].state, placement);
+    let sequence = findSkippedSequence(history[cursor].state, placement);
+    // With a full observed FEN, a reconstruction must land on that position.
+    if (sequence?.length && observedState && stateKey(sequence[sequence.length - 1].state) !== stateKey(observedState)) sequence = null;
     if (sequence?.length) {
       history = history.slice(0, cursor + 1);
       for (const step of sequence) history.push(step);
@@ -3529,6 +3627,13 @@
       return;
     }
     if (continueLivePracticeFromCurrentPosition(placement)) return;
+    // Lichess supplies the full position. When no move path reaches it (a
+    // jump in the move list, a loaded FEN, a study chapter), adopt it as the
+    // new starting point instead of staying on a stale position.
+    if (SITE === "lichess" && observedState) {
+      adoptObservedPosition(observedState);
+      return;
+    }
     syncNotice = "The board changed too quickly to reconstruct the line. Step back to the last recognized position, then replay the missing moves a little more slowly.";
     scheduleRender();
   }
@@ -3573,7 +3678,17 @@
     boardAnnotationResizeObserver = new ResizeObserver(() => renderBoardAnnotations(active(), currentState(), edgeAtCurrent()));
     boardAnnotationResizeObserver.observe(board);
     observedStateToken = "";
+    if (SITE === "lichess") syncLichessObservedPosition();
+    else capturePlacement();
+  }
+
+  // Lichess publishes a full FEN, so a position no move path explains (such
+  // as a page opened at a FEN or a study chapter) can be adopted at once
+  // rather than waiting for the board to mutate.
+  function syncLichessObservedPosition() {
     capturePlacement();
+    const observed = parseFenSafely(readBoardFen());
+    if (observed && stateKey(observed) !== stateKey(currentState())) recoverLatestPlacement();
   }
 
   function pgnHeaders(rep, rootState) {
@@ -3660,8 +3775,11 @@
     try {
       const text = await file.text();
       const addAutomaticChapters = confirm("Automatically create opening chapters for recognized positions in this PGN?\n\nExplicit Chapter: Name comments will import either way.");
-      const rep = importPgn(text, file.name, { addAutomaticChapters });
-      alert(`PGN imported as new repertoire “${rep.name}”.`);
+      const { rep, skippedLines, skippedGames } = importPgn(text, file.name, { addAutomaticChapters });
+      const notes = [];
+      if (skippedLines) notes.push(`${skippedLines} line${skippedLines === 1 ? "" : "s"} stopped at a move that could not be read; the moves after it were not imported.`);
+      if (skippedGames) notes.push(`${skippedGames} game${skippedGames === 1 ? "" : "s"} started from a position this repertoire does not reach and ${skippedGames === 1 ? "was" : "were"} skipped.`);
+      alert(`PGN imported as new repertoire “${rep.name}”.${notes.length ? `\n\n${notes.join("\n")}` : ""}`);
     } catch (error) {
       alert("PGN import failed: " + error.message);
     }
@@ -3683,17 +3801,40 @@
     return `${base} (${number})`;
   }
 
-  function pgnMovetext(text) {
-    const lines = String(text || "").split(/\r?\n/);
-    let inHeader = true;
-    const body = [];
-    for (const line of lines) {
-      if (inHeader && /^\s*\[[^\r\n]*\]\s*$/.test(line)) continue;
-      if (inHeader && !line.trim()) continue;
-      inHeader = false;
-      body.push(line);
+  // A PGN file can hold several games (a Lichess study exports one per
+  // chapter). A tag line after movetext starts the next game.
+  function splitPgnGames(text) {
+    const games = [];
+    let current = null;
+    let inMoves = false;
+    for (const line of String(text || "").split(/\r?\n/)) {
+      const tag = /^\s*\[[A-Za-z0-9_]+\s+"(?:\\.|[^"\\])*"\s*\]\s*$/.test(line);
+      if (!current || (tag && inMoves)) {
+        current = { headers: [], body: [] };
+        games.push(current);
+        inMoves = false;
+      }
+      if (tag && !inMoves) current.headers.push(line);
+      else {
+        if (line.trim()) inMoves = true;
+        current.body.push(line);
+      }
     }
-    return body.join("\n");
+    return games
+      .map(game => ({ headers: game.headers.join("\n"), body: game.body.join("\n") }))
+      .filter(game => game.headers.trim() || game.body.trim());
+  }
+
+  function pgnStartState(headers) {
+    const setup = pgnHeader(headers, "SetUp");
+    const headerFen = pgnHeader(headers, "FEN");
+    if (setup !== "1" && !headerFen) return INITIAL;
+    if (!headerFen) throw new Error("PGN declares SetUp but does not provide a FEN header.");
+    const state = parseFenSafely(headerFen);
+    if (!state || !/^([prnbqkPRNBQK1-8]+\/){7}[prnbqkPRNBQK1-8]+\s+[wb]\s+/.test(headerFen)) {
+      throw new Error("PGN FEN header is invalid.");
+    }
+    return state;
   }
 
   function importPositionComment(rep, key, text, edge = null) {
@@ -3726,32 +3867,49 @@
 
   function importPgn(text, fileName = "", options = {}) {
     const addAutomaticChapters = options.addAutomaticChapters !== false;
-    const headerColor = pgnHeader(text, "RepertoireColor").toLowerCase();
+    const games = splitPgnGames(text);
+    if (!games.length) throw new Error("The file contains no PGN.");
+    const firstHeaders = games[0].headers;
+    const headerColor = (pgnHeader(firstHeaders, "RepertoireColor") || pgnHeader(firstHeaders, "Orientation")).toLowerCase();
     const color = headerColor === "black" ? "black" : "white";
     const fileBase = fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
-    const requestedName = pgnHeader(text, "Event") || fileBase || `${color === "white" ? "White" : "Black"} Repertoire`;
-    const setup = pgnHeader(text, "SetUp");
-    const headerFen = pgnHeader(text, "FEN");
-    let state = INITIAL;
-    if (setup === "1" || headerFen) {
-      if (!headerFen) throw new Error("PGN declares SetUp but does not provide a FEN header.");
-      state = parseFenSafely(headerFen);
-      if (!state || !/^([prnbqkPRNBQK1-8]+\/){7}[prnbqkPRNBQK1-8]+\s+[wb]\s+/.test(headerFen)) {
-        throw new Error("PGN FEN header is invalid.");
+    const requestedName = pgnHeader(firstHeaders, "StudyName") || pgnHeader(firstHeaders, "Event") || fileBase || `${color === "white" ? "White" : "Black"} Repertoire`;
+    const rep = repertoireRecord(uniqueRepertoireName(requestedName), color, pgnStartState(firstHeaders));
+    let skippedLines = 0;
+    let skippedGames = 0;
+    for (const game of games) {
+      const start = pgnStartState(game.headers);
+      // Later games join the tree only where it already reaches their start.
+      if (stateKey(start) !== rep.rootKey && !rep.positions[stateKey(start)]) {
+        skippedGames++;
+        continue;
       }
+      skippedLines += importMovetext(rep, game.body, start, addAutomaticChapters);
     }
-    const rep = repertoireRecord(uniqueRepertoireName(requestedName), color, state);
-    const body = pgnMovetext(text);
-    const tokens = body.match(/\{[^}]*\}|\$\d+|\(|\)|1-0|0-1|1\/2-1\/2|\*|\d+\.(?:\.\.)?|[^\s(){}]+/g) || [];
+    rep.updatedAt = Date.now();
+    data.repertoires.push(rep);
+    data.activeId = rep.id;
+    save();
+    render();
+    return { rep, skippedLines, skippedGames };
+  }
+
+  function importMovetext(rep, body, startState, addAutomaticChapters) {
+    const tokens = body.match(/\{[^}]*\}|;[^\n]*|\$\d+|\(|\)|1-0|0-1|1\/2-1\/2|\*|\d+\.(?:\.\.)?|[^\s(){};]+/g) || [];
     let index = 0;
-    let key = rep.rootKey;
+    let state = startState;
+    let key = stateKey(startState);
     let lastEdge = null;
+    // A move that cannot be read leaves the rest of its variation without a
+    // position, so the rest is dropped (and reported) rather than guessed.
+    let broken = false;
+    let skippedLines = 0;
     const stack = [];
     while (index < tokens.length) {
       const token = tokens[index++];
       if (/^\d+\./.test(token) || /^(1-0|0-1|1\/2-1\/2|\*)$/.test(token)) continue;
       if (token === "(") {
-        stack.push({ state, key, lastEdge });
+        stack.push({ state, key, lastEdge, broken });
         state = lastEdge ? lastEdge.parentState : state;
         key = lastEdge ? lastEdge.parentKey : key;
         lastEdge = null;
@@ -3763,19 +3921,27 @@
           state = entry.state;
           key = entry.key;
           lastEdge = entry.lastEdge;
+          broken = entry.broken;
         }
         continue;
       }
+      if (broken) continue;
       if (token.startsWith("{")) {
         importPositionComment(rep, key, token.slice(1, -1), lastEdge?.edge || null);
         continue;
       }
-      if (/^\$[1-6]$/.test(token)) {
-        if (lastEdge) lastEdge.edge.nag = +token.slice(1);
+      if (/^\$\d+$/.test(token)) {
+        if (lastEdge && /^\$[1-6]$/.test(token)) lastEdge.edge.nag = +token.slice(1);
         continue;
       }
+      // Rest-of-line comments and free-standing evaluation glyphs.
+      if (token.startsWith(";") || /^(?:[!?±∓∞=+\-\/]+|e\.p\.)$/i.test(token)) continue;
       const move = C.moveSan(state, token);
-      if (!move) continue;
+      if (!move) {
+        broken = true;
+        skippedLines++;
+        continue;
+      }
       const uci = move.from + move.to + (move.promotion || "");
       const next = C.apply(state, move);
       const childKey = stateKey(next);
@@ -3802,12 +3968,7 @@
       state = next;
       key = childKey;
     }
-    rep.updatedAt = Date.now();
-    data.repertoires.push(rep);
-    data.activeId = rep.id;
-    save();
-    render();
-    return rep;
+    return skippedLines;
   }
 
   async function installBundledOfficialRepertoires() {
@@ -3849,7 +4010,11 @@
     try {
       const response = await fetch(OPENING_CHAPTERS_URL);
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
-      openingChapterIndex = await response.json();
+      const catalog = await response.json();
+      // The catalog names every en-passant square; look it up by canonical key.
+      const positions = {};
+      for (const [key, record] of Object.entries(catalog?.positions || {})) positions[canonicalKey(key)] ||= record;
+      openingChapterIndex = { meta: catalog?.meta || {}, positions };
     } catch (error) {
       openingChapterLoadError = error?.message || String(error);
       openingChapterIndex = { meta: {}, positions: {} };
@@ -3914,7 +4079,7 @@
     }, true);
     document.documentElement.addEventListener("crb-lichess-state", () => {
       if (SITE !== "lichess") return;
-      capturePlacement();
+      syncLichessObservedPosition();
       scheduleRender();
     });
     document.documentElement.addEventListener("crb-chesscom-state", () => {

@@ -27,7 +27,18 @@
       lastCapability = capability;
       root.dataset.crbLichessAnalysis = capability;
     }
-    const nextFen = fen || chessgroundApi()?.getFen?.() || "";
+    // Prefer a full FEN: the analysis event's, then the current analysis node's.
+    // Chessground's getFen() is placement only, so it is published only when
+    // the board shows a different placement than the last full FEN; otherwise
+    // it would replace the side to move and castling rights every poll.
+    let nextFen = fen || "";
+    if (!nextFen) {
+      try { nextFen = api?.navigate?.ctrl?.node?.fen || ""; } catch {}
+    }
+    if (!nextFen) {
+      const boardFen = chessgroundApi()?.getFen?.() || "";
+      if (boardFen && boardFen !== lastFen.split(/\s+/)[0]) nextFen = boardFen;
+    }
     if (nextFen && nextFen !== lastFen) {
       lastFen = nextFen;
       root.dataset.crbLichessFen = nextFen;
